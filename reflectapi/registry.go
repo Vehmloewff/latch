@@ -1,0 +1,407 @@
+// Package reflectapi is the single reflection stage of Latchwire. It walks
+// Go reflect.Type values reachable from registered connect params, method
+// requests/responses, and event payloads, and produces the normalized
+// protocol.Protocol IR. No other package in Latchwire inspects reflect.Type
+// directly.
+package reflectapi
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/vehmloewff/latchwire/protocol"
+)
+
+var (
+	timeType  = reflect.TypeOf(time.Time{})
+	errType   = reflect.TypeOf((*error)(nil)).Elem()
+	marshaler = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+)
+
+// Registry incrementally resolves reflect.Type values into protocol.TypeRef
+// values, deduplicating named struct/enum types by reflect.Type identity so
+// that a type used from many methods/events is emitted exactly once.
+type Registry struct {
+	byType map[reflect.Type]*protocol.NamedType
+	order  []*protocol.NamedType
+
+	// enumValues tracks the tag-declared values for each named string enum
+	// type, keyed by reflect.Type, so repeated uses of the same Go type are
+	// checked for consistency.
+	enumValues map[reflect.Type][]string
+}
+
+// NewRegistry creates an empty type registry.
+func NewRegistry() *Registry {
+	return &Registry{
+		byType:     make(map[reflect.Type]*protocol.NamedType),
+		enumValues: make(map[reflect.Type][]string),
+	}
+}
+
+// Types returns every named type discovered so far, sorted deterministically
+// by ID.
+func (r *Registry) Types() []*protocol.NamedType {
+	out := make([]*protocol.NamedType, len(r.order))
+	copy(out, r.order)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// Resolve converts a reflect.Type into a protocol.TypeRef, registering any
+// named struct/enum types it discovers along the way.
+func (r *Registry) Resolve(t reflect.Type) (protocol.TypeRef, error) {
+	return r.resolve(t, map[reflect.Type]bool{})
+}
+
+func (r *Registry) resolve(t reflect.Type, visiting map[reflect.Type]bool) (protocol.TypeRef, error) {
+	switch {
+	case t == timeType:
+		return protocol.TypeRef{Kind: protocol.KindTime}, nil
+
+	case t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler):
+		return protocol.TypeRef{}, fmt.Errorf(
+			"type %s implements json.Marshaler; Latchwire v1 cannot infer its wire shape (unsupported custom marshaler)",
+			t.String(),
+		)
+	}
+
+	switch t.Kind() {
+	case reflect.String:
+		if t.PkgPath() == "" {
+			return protocol.TypeRef{Kind: protocol.KindString}, nil
+		}
+		return r.resolveNamedString(t)
+
+	case reflect.Bool:
+		return protocol.TypeRef{Kind: protocol.KindBool}, nil
+	case reflect.Int:
+		return protocol.TypeRef{Kind: protocol.KindInt}, nil
+	case reflect.Int8:
+		return protocol.TypeRef{Kind: protocol.KindInt8}, nil
+	case reflect.Int16:
+		return protocol.TypeRef{Kind: protocol.KindInt16}, nil
+	case reflect.Int32:
+		return protocol.TypeRef{Kind: protocol.KindInt32}, nil
+	case reflect.Int64:
+		return protocol.TypeRef{}, fmt.Errorf(
+			"unsupported type %s: int64 fields are rejected in Latchwire v1 because they cannot be represented "+
+				"safely as a JavaScript number and Latchwire does not yet support a custom wire-encoding policy; "+
+				"use int32 (or a string) instead",
+			t.String(),
+		)
+	case reflect.Uint:
+		return protocol.TypeRef{Kind: protocol.KindUint}, nil
+	case reflect.Uint8:
+		return protocol.TypeRef{Kind: protocol.KindUint8}, nil
+	case reflect.Uint16:
+		return protocol.TypeRef{Kind: protocol.KindUint16}, nil
+	case reflect.Uint32:
+		return protocol.TypeRef{Kind: protocol.KindUint32}, nil
+	case reflect.Uint64:
+		return protocol.TypeRef{}, fmt.Errorf(
+			"unsupported type %s: uint64 fields are rejected in Latchwire v1 because they cannot be represented "+
+				"safely as a JavaScript number and Latchwire does not yet support a custom wire-encoding policy; "+
+				"use uint32 (or a string) instead",
+			t.String(),
+		)
+	case reflect.Float32:
+		return protocol.TypeRef{Kind: protocol.KindFloat32}, nil
+	case reflect.Float64:
+		return protocol.TypeRef{Kind: protocol.KindFloat64}, nil
+
+	case reflect.Pointer:
+		if visiting[t] {
+			return protocol.TypeRef{}, fmt.Errorf("unsupported recursive pointer type %s", t.String())
+		}
+		visiting = cloneVisiting(visiting)
+		visiting[t] = true
+		elem, err := r.resolve(t.Elem(), visiting)
+		if err != nil {
+			return protocol.TypeRef{}, err
+		}
+		return protocol.TypeRef{Kind: protocol.KindPointer, Elem: &elem}, nil
+
+	case reflect.Slice:
+		elem, err := r.resolve(t.Elem(), visiting)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("slice element of %s: %w", t.String(), err)
+		}
+		return protocol.TypeRef{Kind: protocol.KindSlice, Elem: &elem}, nil
+
+	case reflect.Array:
+		elem, err := r.resolve(t.Elem(), visiting)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("array element of %s: %w", t.String(), err)
+		}
+		return protocol.TypeRef{Kind: protocol.KindArray, Elem: &elem, ArrayLen: t.Len()}, nil
+
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return protocol.TypeRef{}, fmt.Errorf("unsupported map key type %s on %s: only string keys are supported", t.Key().String(), t.String())
+		}
+		val, err := r.resolve(t.Elem(), visiting)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("map value of %s: %w", t.String(), err)
+		}
+		return protocol.TypeRef{Kind: protocol.KindMap, MapValue: &val}, nil
+
+	case reflect.Struct:
+		return r.resolveStruct(t, visiting)
+
+	default:
+		return protocol.TypeRef{}, fmt.Errorf("unsupported Go type %s (kind %s)", t.String(), t.Kind())
+	}
+}
+
+func (r *Registry) resolveNamedString(t reflect.Type) (protocol.TypeRef, error) {
+	// A named string type with no declared enum values is treated as a
+	// plain string on the wire — Go itself places no value restriction on
+	// it, so this matches Go's own semantics. See docs/design-notes.md
+	// ("Enum declaration convention").
+	values, hasEnum := r.enumValues[t]
+	if !hasEnum {
+		return protocol.TypeRef{Kind: protocol.KindString}, nil
+	}
+
+	id := typeID(t)
+	if existing, ok := r.byType[t]; ok {
+		_ = existing
+		return protocol.TypeRef{Kind: protocol.KindEnum, NamedType: id}, nil
+	}
+
+	nt := &protocol.NamedType{
+		ID:         id,
+		GoPkgPath:  t.PkgPath(),
+		GoName:     t.Name(),
+		Kind:       protocol.KindEnum,
+		EnumBase:   protocol.KindString,
+		EnumValues: values,
+	}
+	r.byType[t] = nt
+	r.order = append(r.order, nt)
+	return protocol.TypeRef{Kind: protocol.KindEnum, NamedType: id}, nil
+}
+
+// DeclareEnum registers the allowed values for a named string type. It must
+// be called (via the public latchwire.Enum tag mechanism, see field.go)
+// before that type is resolved for the first time.
+func (r *Registry) declareEnum(t reflect.Type, values []string) error {
+	if existing, ok := r.enumValues[t]; ok {
+		if !equalStrings(existing, values) {
+			return fmt.Errorf(
+				"type %s declares conflicting enum values in different jsonschema_enum tags (%v vs %v)",
+				t.String(), existing, values,
+			)
+		}
+		return nil
+	}
+	r.enumValues[t] = values
+	return nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool) (protocol.TypeRef, error) {
+	if t.Name() == "" {
+		return protocol.TypeRef{}, fmt.Errorf(
+			"anonymous struct types are not supported; define a named type instead",
+		)
+	}
+	if t.PkgPath() == "" {
+		return protocol.TypeRef{}, fmt.Errorf("struct type %s has no package path", t.Name())
+	}
+
+	if nt, ok := r.byType[t]; ok {
+		return protocol.TypeRef{Kind: protocol.KindStruct, NamedType: nt.ID}, nil
+	}
+
+	id := typeID(t)
+	nt := &protocol.NamedType{
+		ID:        id,
+		GoPkgPath: t.PkgPath(),
+		GoName:    t.Name(),
+		Kind:      protocol.KindStruct,
+	}
+	// Register before walking fields so self-referential types (e.g. a tree
+	// node with []*Node children) resolve back to this same NamedType
+	// instead of recursing forever.
+	r.byType[t] = nt
+	r.order = append(r.order, nt)
+
+	visiting = cloneVisiting(visiting)
+	visiting[t] = true
+
+	seen := map[string]string{} // json name -> go field name
+	var fields []protocol.Field
+
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+
+		if sf.Anonymous {
+			return protocol.TypeRef{}, fmt.Errorf(
+				"struct %s: embedded field %s is not supported in Latchwire v1; use a named field instead",
+				t.String(), sf.Name,
+			)
+		}
+		if !sf.IsExported() {
+			continue
+		}
+
+		jsonName, optional, skip, err := parseJSONTag(sf)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
+		}
+		if skip {
+			continue
+		}
+
+		if err := declareFieldEnum(r, sf); err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
+		}
+
+		fieldType := sf.Type
+		nullable := false
+		if fieldType.Kind() == reflect.Pointer {
+			nullable = true
+		}
+
+		ref, err := r.resolve(fieldType, visiting)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
+		}
+
+		if prev, dup := seen[jsonName]; dup {
+			return protocol.TypeRef{}, fmt.Errorf(
+				"struct %s: fields %s and %s both encode to JSON property %q",
+				t.String(), prev, sf.Name, jsonName,
+			)
+		}
+		seen[jsonName] = sf.Name
+
+		constraints := parseConstraintsTag(sf)
+
+		fields = append(fields, protocol.Field{
+			GoName:      sf.Name,
+			JSONName:    jsonName,
+			Type:        ref,
+			Optional:    optional,
+			Nullable:    nullable,
+			Constraints: constraints,
+		})
+	}
+
+	nt.Fields = fields
+	return protocol.TypeRef{Kind: protocol.KindStruct, NamedType: id}, nil
+}
+
+func cloneVisiting(v map[reflect.Type]bool) map[reflect.Type]bool {
+	out := make(map[reflect.Type]bool, len(v)+1)
+	for k, val := range v {
+		out[k] = val
+	}
+	return out
+}
+
+func typeID(t reflect.Type) string {
+	return t.PkgPath() + "." + t.Name()
+}
+
+// parseJSONTag mirrors encoding/json's tag semantics: `json:"-"` skips the
+// field, `json:"name,omitempty"` renames it and marks it optional, and a
+// missing tag falls back to the Go field name.
+func parseJSONTag(sf reflect.StructField) (jsonName string, optional bool, skip bool, err error) {
+	tag, ok := sf.Tag.Lookup("json")
+	if !ok || tag == "" {
+		return sf.Name, false, false, nil
+	}
+	parts := strings.Split(tag, ",")
+	name := parts[0]
+	if name == "-" && len(parts) == 1 {
+		return "", false, true, nil
+	}
+	if name == "" {
+		name = sf.Name
+	}
+	for _, opt := range parts[1:] {
+		if opt == "omitempty" {
+			optional = true
+		}
+	}
+	return name, optional, false, nil
+}
+
+func declareFieldEnum(r *Registry, sf reflect.StructField) error {
+	tag, ok := sf.Tag.Lookup("jsonschema_enum")
+	if !ok || tag == "" {
+		return nil
+	}
+	t := sf.Type
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.String || t.PkgPath() == "" {
+		return fmt.Errorf("jsonschema_enum tag only applies to named string types, got %s", sf.Type.String())
+	}
+	values := strings.Split(tag, ",")
+	for i := range values {
+		values[i] = strings.TrimSpace(values[i])
+	}
+	return r.declareEnum(t, values)
+}
+
+// parseConstraintsTag reads a `jsonschema:"minLength=1,maximum=10"` style
+// tag into protocol.Constraints. Unknown keys are ignored.
+func parseConstraintsTag(sf reflect.StructField) protocol.Constraints {
+	var c protocol.Constraints
+	tag, ok := sf.Tag.Lookup("jsonschema")
+	if !ok || tag == "" {
+		return c
+	}
+	for _, part := range strings.Split(tag, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		key := strings.TrimSpace(kv[0])
+		var val string
+		if len(kv) == 2 {
+			val = strings.TrimSpace(kv[1])
+		}
+		switch key {
+		case "minLength":
+			if n, err := strconv.Atoi(val); err == nil {
+				c.MinLength = &n
+			}
+		case "maxLength":
+			if n, err := strconv.Atoi(val); err == nil {
+				c.MaxLength = &n
+			}
+		case "minimum":
+			if f, err := strconv.ParseFloat(val, 64); err == nil {
+				c.Minimum = &f
+			}
+		case "maximum":
+			if f, err := strconv.ParseFloat(val, 64); err == nil {
+				c.Maximum = &f
+			}
+		case "pattern":
+			c.Pattern = val
+		case "format":
+			c.Format = val
+		}
+	}
+	return c
+}

@@ -1,0 +1,9 @@
+{
+  "files": [
+    "lib/basic_client.dart",
+    "lib/src/client.dart",
+    "lib/src/models.dart",
+    "lib/src/runtime.dart",
+    "pubspec.yaml"
+  ]
+}

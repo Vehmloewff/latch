@@ -1,0 +1,15 @@
+# Go
+/*.test
+
+# TypeScript / Node (examples/basic/generated/typescript and any other
+# generated TS output a developer sets up locally)
+node_modules/
+dist/
+
+# Dart (examples/basic/generated/dart and any other generated Dart output)
+.dart_tool/
+.packages
+build/
+
+# Editor/OS
+.DS_Store

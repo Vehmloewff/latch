@@ -1,0 +1,149 @@
+package integration
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/latchwire/client"
+	"github.com/vehmloewff/latchwire/examples/basic/api"
+	basicclient "github.com/vehmloewff/latchwire/examples/basic/generated/golang"
+)
+
+// TestGeneratedGoClientAgainstLiveServer regenerates the "basic" example's
+// Go client from the current generator, then drives it — using ordinary Go
+// code, no reflection or codegen at the call site — against a live
+// instance of the same protocol served over a real WebSocket.
+func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
+	root := repoRoot(t)
+	outDir := root + "/examples/basic/generated/golang"
+
+	if err := api.Build().Generate(latchwire.GenerateOptions{
+		Go: &latchwire.GoOptions{OutputDir: outDir, Package: "basicclient"},
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	srv := httptest.NewServer(api.Build())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := basicclient.New(wsURL)
+	conn, err := c.Connect(ctx, basicclient.ConnectParams{Token: "secret"})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case welcome := <-conn.Events.MessageReceived():
+		if welcome.Room != "lobby" || welcome.Text != "welcome" {
+			t.Fatalf("unexpected welcome event: %+v", welcome)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for welcome event")
+	}
+
+	select {
+	case presence := <-conn.Events.PresenceChanged():
+		if presence.UserID != "self" || !presence.Online {
+			t.Fatalf("unexpected presence event: %+v", presence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for presence event")
+	}
+
+	result, err := conn.Room.Subscribe(ctx, basicclient.SubscribeRequest{Room: "general"})
+	if err != nil {
+		t.Fatalf("Room.Subscribe: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected OK=true, got %+v", result)
+	}
+
+	listed, err := conn.Room.List(ctx, basicclient.ListRoomsRequest{})
+	if err != nil {
+		t.Fatalf("Room.List: %v", err)
+	}
+	if len(listed.Rooms) != 3 {
+		t.Fatalf("expected 3 rooms, got %+v", listed)
+	}
+
+	// Nested types + optional/nullable fields.
+	profile, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "alice"})
+	if err != nil {
+		t.Fatalf("Profile.Get: %v", err)
+	}
+	if profile.Profile.Name != "User alice" || profile.Profile.Address.City != "Springfield" {
+		t.Fatalf("unexpected profile: %+v", profile)
+	}
+	if profile.Profile.Nickname == nil || profile.Profile.Address.Zip == nil {
+		t.Fatalf("expected nickname and zip to be present: %+v", profile)
+	}
+
+	noZipProfile, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "no-zip"})
+	if err != nil {
+		t.Fatalf("Profile.Get: %v", err)
+	}
+	if noZipProfile.Profile.Address.Zip != nil {
+		t.Fatalf("expected zip to be nil (Go's own omitempty pointer semantics), got %+v", noZipProfile)
+	}
+
+	// Application error.
+	_, err = conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "missing"})
+	if err == nil {
+		t.Fatalf("expected profile.get(userId=missing) to fail")
+	}
+	var appErr *client.Error
+	if !errors.As(err, &appErr) || appErr.Code != "not_found" {
+		t.Fatalf("expected *client.Error{Code: not_found}, got %v", err)
+	}
+
+	// Concurrent calls: fire many requests at once and verify every
+	// response matches its own request despite handlers executing
+	// concurrently.
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			userID := fmt.Sprintf("user-%d", i)
+			p, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: userID})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if p.Profile.Name != "User "+userID {
+				errs <- fmt.Errorf("concurrent call %d returned wrong profile: %+v", i, p)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent call failed: %v", err)
+		}
+	}
+
+	badClient := basicclient.New(wsURL)
+	_, err = badClient.Connect(ctx, basicclient.ConnectParams{Token: ""})
+	if err == nil {
+		t.Fatalf("expected empty token to be rejected")
+	}
+	var wireErr *client.Error
+	if !errors.As(err, &wireErr) || wireErr.Code != latchwire.ErrCodeInvalidConnectPayload {
+		t.Fatalf("expected invalid_connect_payload *client.Error, got %v", err)
+	}
+}
