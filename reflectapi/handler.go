@@ -6,7 +6,10 @@ import (
 	"reflect"
 )
 
-var ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var (
+	ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
+	errType = reflect.TypeOf((*error)(nil)).Elem()
+)
 
 // HandlerAdapter wraps a validated Latchwire method handler so callers can
 // invoke it generically without knowing the concrete request/response types

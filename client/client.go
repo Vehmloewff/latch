@@ -145,11 +145,11 @@ func (c *Conn) readLoop() {
 	}
 }
 
-func wireErrToError(we *wire.Error, defaultCode, defaultMessage string) *Error {
-	if we == nil {
-		return &Error{Code: defaultCode, Message: defaultMessage}
+func wireErrToError(message, defaultCode, defaultMessage string) *Error {
+	if message == "" {
+		message = defaultMessage
 	}
-	return &Error{Code: we.Code, Message: we.Message}
+	return &Error{Code: defaultCode, Message: message}
 }
 
 func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {

@@ -175,10 +175,10 @@ func (s *Server[S]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.onConnect != nil {
 		state, err := s.callOnConnect(conn)
 		if err != nil {
-			code, message := errorCodeAndMessage(err, ErrCodeConnectRejected, "connection rejected", s.opts.Debug)
+			_, message := errorCodeAndMessage(err, ErrCodeConnectRejected, "connection rejected", s.opts.Debug)
 			_ = conn.enqueue(wire.Envelope{
 				Type:  wire.FrameConnectionError,
-				Error: &wire.Error{Code: code, Message: message},
+				Error: message,
 			})
 			_ = conn.Close(ClosePolicyViolation, "connection rejected")
 			return
@@ -244,7 +244,7 @@ func (s *Server[S]) readLoop(conn *Conn) {
 
 func (s *Server[S]) protocolViolation(conn *Conn, message string) {
 	s.logf(conn.ctx, slog.LevelWarn, "latchwire: protocol violation", "message", message)
-	env := wire.Envelope{Type: wire.FrameConnectionError, Error: &wire.Error{Code: ErrCodeProtocolViolation, Message: message}}
+	env := wire.Envelope{Type: wire.FrameConnectionError, Error: message}
 	_ = conn.enqueue(env)
 }
 
@@ -375,7 +375,7 @@ func (s *Server[S]) invokeHandler(ctx context.Context, conn *Conn, state any, m 
 }
 
 func (s *Server[S]) sendResponseError(conn *Conn, id, code, message string) {
-	_ = conn.enqueue(wire.Envelope{Type: wire.FrameError, ID: id, Error: &wire.Error{Code: code, Message: message}})
+	_ = conn.enqueue(wire.Envelope{Type: wire.FrameError, ID: id, Error: message})
 }
 
 func (s *Server[S]) logf(ctx context.Context, level slog.Level, msg string, args ...any) {

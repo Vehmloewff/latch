@@ -19,6 +19,13 @@ const (
 	FrameConnectionError FrameType = "connection_error"
 )
 
+// Error is the legacy structured error shape retained for compatibility with
+// older protocol users. New frames use the safe Error message string below.
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // Envelope is the single discriminated-union message shape used for every
 // frame type. Fields irrelevant to a given Type are simply omitted.
 type Envelope struct {
