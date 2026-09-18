@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/vehmloewff/report"
 
 	"github.com/vehmloewff/latchwire"
 	"github.com/vehmloewff/latchwire/wire"
@@ -22,7 +23,7 @@ import (
 // recompiling a schema per request), not to chase a specific number.
 func BenchmarkRequestRoundTrip(b *testing.B) {
 	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, error) {
+	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
 		return AddResponse{Result: req.A + req.B}, nil
 	})
 	if err != nil {

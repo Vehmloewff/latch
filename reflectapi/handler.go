@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+
+	"github.com/vehmloewff/report"
 )
 
 var ctxType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var errType = reflect.TypeOf((*report.Err)(nil)).Elem()
 
 // HandlerAdapter wraps a validated Latchwire method handler so callers can
 // invoke it generically without knowing the concrete request/response types
@@ -21,7 +24,7 @@ type HandlerAdapter struct {
 // ValidateHandler checks that handler has the single canonical Latchwire
 // method signature:
 //
-//	func(context.Context, <wantConnType>, Request) (Response, error)
+//	func(context.Context, <wantConnType>, Request) (Response, report.Err)
 //
 // where Request and Response are named, exported struct types. It returns a
 // descriptive error for every rejected shape instead of deferring the check
@@ -48,7 +51,7 @@ func ValidateHandler(handler any, wantConnType reflect.Type) (*HandlerAdapter, e
 	}
 	if ht.NumOut() != 2 {
 		return nil, fmt.Errorf(
-			"handler must return exactly 2 values (Response, error), got %d",
+			"handler must return exactly 2 values (Response, report.Err), got %d",
 			ht.NumOut(),
 		)
 	}
@@ -77,10 +80,10 @@ func ValidateHandler(handler any, wantConnType reflect.Type) (*HandlerAdapter, e
 
 	errOutType := ht.Out(1)
 	if !errOutType.Implements(errType) {
-		return nil, fmt.Errorf("handler's second return value must be error, got %s", errOutType)
+		return nil, fmt.Errorf("handler's second return value must be report.Err, got %s", errOutType)
 	}
 	if errOutType != errType {
-		return nil, fmt.Errorf("handler's second return value must be exactly the error interface, got %s", errOutType)
+		return nil, fmt.Errorf("handler's second return value must be exactly report.Err, got %s", errOutType)
 	}
 
 	return &HandlerAdapter{
@@ -113,12 +116,12 @@ func (h *HandlerAdapter) NewRequest() any {
 // the concrete *latchwire.Conn[C] instance matching wantConnType passed to
 // ValidateHandler. reqPtr must be a pointer to h.RequestType, typically the
 // value returned by NewRequest after being unmarshaled into.
-func (h *HandlerAdapter) Call(ctx context.Context, connVal reflect.Value, reqPtr any) (resp any, err error) {
+func (h *HandlerAdapter) Call(ctx context.Context, connVal reflect.Value, reqPtr any) (resp any, err report.Err) {
 	reqVal := reflect.ValueOf(reqPtr).Elem()
 	outs := h.fn.Call([]reflect.Value{reflect.ValueOf(ctx), connVal, reqVal})
 	resp = outs[0].Interface()
 	if errIface := outs[1].Interface(); errIface != nil {
-		err = errIface.(error)
+		err = errIface.(report.Err)
 	}
 	return resp, err
 }

@@ -42,7 +42,7 @@ void main() {
     // Application error.
     await expectLater(
       conn.profile.get(ProfileGetRequest(userId: 'missing')),
-      throwsA(isA<LatchwireError>().having((e) => e.code, 'code', 'not_found')),
+      throwsA(isA<LatchwireError>().having((e) => e.message, 'message', 'user not found')),
     );
 
     // Concurrent calls: fire many requests at once and verify every
@@ -57,7 +57,8 @@ void main() {
     final badClient = BasicClient(ClientOptions(url));
     await expectLater(
       badClient.connect(ConnectParams(token: '')),
-      throwsA(isA<LatchwireError>().having((e) => e.code, 'code', 'invalid_connect_payload')),
+      throwsA(isA<LatchwireError>().having(
+          (e) => e.message, 'message', 'connect payload failed schema validation')),
     );
 
     conn.close();

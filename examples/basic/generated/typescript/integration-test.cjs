@@ -75,7 +75,7 @@ async function main() {
   try {
     await conn.profile.get({ userId: "missing" });
   } catch (err) {
-    appErrorOk = err instanceof LatchwireError && err.code === "not_found";
+    appErrorOk = err instanceof LatchwireError && err.message === "user not found";
   }
   if (!appErrorOk) {
     throw new Error("expected profile.get({userId:'missing'}) to reject with not_found");
@@ -97,8 +97,8 @@ async function main() {
     const badClient = new BasicClient({ url });
     await badClient.connect({ token: "" });
   } catch (err) {
-    console.log("step: bad connect rejected with code", err && err.code);
-    rejectedOk = err instanceof LatchwireError && err.code === "invalid_connect_payload";
+    console.log("step: bad connect rejected with message", err && err.message);
+    rejectedOk = err instanceof LatchwireError && err.message === "connect payload failed schema validation";
   }
   if (!rejectedOk) {
     throw new Error("expected empty token to be rejected with invalid_connect_payload");

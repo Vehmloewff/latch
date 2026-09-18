@@ -73,19 +73,16 @@ semantics silently.
 the connection is closed (`ClosePolicyViolation`). Latchwire never silently
 drops a typed frame to relieve backpressure.
 
-## 5. Error code naming convention
+## 5. Report errors
 
-Wire error codes are `snake_case` strings. Latchwire reserves:
+Error and `connection_error` frames carry a single safe message string. They
+never expose protocol-specific codes or application error structs.
 
-- `method_not_found`
-- `invalid_request`
-- `internal_error`
-- `invalid_connect_payload`
-- `protocol_violation`
-- `connect_rejected`
-- `duplicate_request_id`
-
-Applications are free to use any other code string via `latchwire.NewError`.
+Go handlers and `OnConnect` callbacks return `report.Err`. Wrap reports with
+operation context and attach relevant diagnostic data with `Dump`; use
+`Internal` for implementation details that must not reach the client. Latchwire
+uses `UserMessage` for the wire string and records the full report in the
+OpenTelemetry span.
 
 ## 6. OnConnect is optional
 

@@ -19,7 +19,6 @@ import (
 
 var (
 	timeType  = reflect.TypeOf(time.Time{})
-	errType   = reflect.TypeOf((*error)(nil)).Elem()
 	marshaler = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
 )
 

@@ -18,11 +18,8 @@ export interface WebSocketLike {
 
 /** Thrown for every RPC rejection and connect failure. */
 export class LatchwireError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
+  constructor(message: string) {
     super(message);
-    this.code = code;
     this.name = "LatchwireError";
   }
 }
@@ -44,7 +41,7 @@ interface WireEnvelope {
   method?: string;
   event?: string;
   payload?: unknown;
-  error?: { code: string; message: string };
+  error?: string;
 }
 
 interface PendingRequest {
@@ -74,7 +71,7 @@ export class EventStream<T> {
   }
 }
 
-const connectionClosedError = () => new LatchwireError("connection_closed", "the connection is closed");
+const connectionClosedError = () => new LatchwireError("the connection is closed");
 
 /** Base class for every generated "Connected*Client". Handles the
  * WebSocket message loop, request/response correlation by ID, and
@@ -166,7 +163,7 @@ export abstract class BaseConnection {
         const p = env.id ? this.pending.get(env.id) : undefined;
         if (p && env.id) {
           this.pending.delete(env.id);
-          p.reject(new LatchwireError(env.error?.code ?? "internal_error", env.error?.message ?? "internal error"));
+          p.reject(new LatchwireError(env.error ?? "internal error"));
         }
         break;
       }
@@ -174,7 +171,7 @@ export abstract class BaseConnection {
         this.dispatchEvent(env);
         break;
       case "connection_error":
-        this.failAllPending(new LatchwireError(env.error?.code ?? "internal_error", env.error?.message ?? "connection error"));
+        this.failAllPending(new LatchwireError(env.error ?? "connection error"));
         this.handleClose();
         break;
       default:
@@ -188,7 +185,7 @@ export abstract class BaseConnection {
     this.failAllPending(connectionClosedError());
   }
 
-  private failAllPending(err: LatchwireError): void {
+  private failAllPending(err: Error): void {
     for (const [, p] of this.pending) {
       p.reject(err);
     }
@@ -285,7 +282,7 @@ export function connectSocket(
       } else if (env.type === "connection_error") {
         settled = true;
         ws.close();
-        reject(new LatchwireError(env.error?.code ?? "internal_error", env.error?.message ?? "connection rejected"));
+        reject(new LatchwireError(env.error ?? "connection rejected"));
       }
     };
   });

@@ -10,6 +10,7 @@ import (
 
 	"github.com/vehmloewff/latchwire"
 	"github.com/vehmloewff/latchwire/client"
+	"github.com/vehmloewff/report"
 )
 
 type connectParams struct {
@@ -38,9 +39,9 @@ func newTestServer(t *testing.T) (url string, tickEvent *latchwire.EventDef[tick
 		t.Fatalf("RegisterEvent: %v", err)
 	}
 
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[connectParams], req addRequest) (addResponse, error) {
+	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[connectParams], req addRequest) (addResponse, report.Err) {
 		if req.A == -1 {
-			return addResponse{}, latchwire.NewError("bad_input", "a must not be -1")
+			return addResponse{}, report.New("a must not be -1")
 		}
 		return addResponse{Result: req.A + req.B}, nil
 	})
@@ -48,11 +49,14 @@ func newTestServer(t *testing.T) (url string, tickEvent *latchwire.EventDef[tick
 		t.Fatalf("Register: %v", err)
 	}
 
-	err = srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[connectParams]) error {
+	err = srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[connectParams]) report.Err {
 		if conn.Params().Token == "reject-me" {
-			return latchwire.NewError("unauthorized", "token rejected")
+			return report.New("token rejected")
 		}
-		return evt.Send(conn, tick{Value: 1})
+		if err := evt.Send(conn, tick{Value: 1}); err != nil {
+			return report.From(err)
+		}
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("OnConnect: %v", err)
@@ -112,9 +116,8 @@ func TestClientApplicationError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error")
 	}
-	wireErr, ok := err.(*client.Error)
-	if !ok || wireErr.Code != "bad_input" {
-		t.Fatalf("expected *client.Error{Code: bad_input}, got %v", err)
+	if err.Error() != "handler returned an error" {
+		t.Fatalf("expected application error message, got %v", err)
 	}
 }
 
@@ -129,9 +132,8 @@ func TestClientConnectRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected connect to be rejected")
 	}
-	wireErr, ok := err.(*client.Error)
-	if !ok || wireErr.Code != latchwire.ErrCodeInvalidConnectPayload {
-		t.Fatalf("expected *client.Error{Code: invalid_connect_payload}, got %v", err)
+	if err.Error() != "connect payload failed schema validation" {
+		t.Fatalf("expected connect payload error, got %v", err)
 	}
 }
 
@@ -145,9 +147,8 @@ func TestClientOnConnectRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected connect to be rejected by OnConnect")
 	}
-	wireErr, ok := err.(*client.Error)
-	if !ok || wireErr.Code != "unauthorized" {
-		t.Fatalf("expected *client.Error{Code: unauthorized}, got %v", err)
+	if err.Error() != "connection rejected" {
+		t.Fatalf("expected OnConnect rejection message, got %v", err)
 	}
 }
 

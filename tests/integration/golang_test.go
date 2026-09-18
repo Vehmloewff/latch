@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/client"
 	"github.com/vehmloewff/latchwire/examples/basic/api"
 	basicclient "github.com/vehmloewff/latchwire/examples/basic/generated/golang"
 )
@@ -103,9 +101,8 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected profile.get(userId=missing) to fail")
 	}
-	var appErr *client.Error
-	if !errors.As(err, &appErr) || appErr.Code != "not_found" {
-		t.Fatalf("expected *client.Error{Code: not_found}, got %v", err)
+	if err.Error() != "user not found" {
+		t.Fatalf("expected user not found error, got %v", err)
 	}
 
 	// Concurrent calls: fire many requests at once and verify every
@@ -142,8 +139,7 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected empty token to be rejected")
 	}
-	var wireErr *client.Error
-	if !errors.As(err, &wireErr) || wireErr.Code != latchwire.ErrCodeInvalidConnectPayload {
-		t.Fatalf("expected invalid_connect_payload *client.Error, got %v", err)
+	if err.Error() != "connect payload failed schema validation" {
+		t.Fatalf("expected connect payload error, got %v", err)
 	}
 }

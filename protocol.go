@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/vehmloewff/latchwire/jsonschema"
 	"github.com/vehmloewff/latchwire/protocol"
 	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/report"
 )
 
 // handshakeTimeout bounds how long Latchwire waits for a client's initial
@@ -165,8 +168,17 @@ func (s *Server[C]) ConnectSchema() map[string]any {
 // and every registered event are validated once, on the first call to
 // ServeHTTP, Manifest, or Generate (whichever runs first).
 func (s *Server[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := s.opts.Tracer.Start(r.Context(), "latchwire.connection",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("latchwire.protocol", s.opts.ProtocolName),
+			attribute.String("latchwire.version", s.opts.ProtocolVersion),
+		),
+	)
+	defer span.End()
+
 	if err := s.finalize(); err != nil {
-		s.logf(context.Background(), slog.LevelError, "latchwire: server misconfigured", "error", err)
+		spanError(ctx, "latchwire: server misconfigured", err)
 		http.Error(w, "latchwire: server misconfigured", http.StatusInternalServerError)
 		return
 	}
@@ -191,12 +203,13 @@ func (s *Server[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
-		s.logf(context.Background(), slog.LevelWarn, "latchwire: websocket accept failed", "error", err)
+		spanError(ctx, "latchwire: websocket accept failed", err)
 		return
 	}
 	ws.SetReadLimit(s.opts.MaxMessageBytes)
 
-	conn := newConn(s, ws, context.Background())
+	conn := newConn(s, ws, ctx)
+	s.track(conn)
 	go conn.writePump()
 
 	if !s.handshake(conn) {
@@ -204,8 +217,7 @@ func (s *Server[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.track(conn)
-	s.logf(conn.ctx, slog.LevelInfo, "latchwire: connection accepted")
+	spanEvent(conn.ctx, "latchwire: connection accepted")
 
 	s.readLoop(conn)
 }
@@ -217,30 +229,42 @@ func (s *Server[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // failed, in which case a connection_error frame has already been written
 // (best-effort) and the caller must close the connection.
 func (s *Server[C]) handshake(conn *Conn[C]) bool {
-	ctx, cancel := context.WithTimeout(conn.ctx, handshakeTimeout)
+	ctx, span := s.opts.Tracer.Start(conn.ctx, "latchwire.handshake",
+		trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
+	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
 	_, raw, err := conn.ws.Read(ctx)
 	if err != nil {
-		s.logf(conn.ctx, slog.LevelWarn, "latchwire: handshake read failed", "error", err)
+		spanError(ctx, "latchwire: handshake read failed", err)
 		return false
 	}
 
 	var env wire.Envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		s.sendConnectionErrorDirect(conn, ErrCodeProtocolViolation, "malformed connect envelope")
+		spanError(ctx, "latchwire: malformed connect envelope", err)
+		s.sendConnectionErrorDirect(conn, "malformed connect envelope")
 		return false
 	}
 	if env.Type != wire.FrameConnect {
-		s.sendConnectionErrorDirect(conn, ErrCodeProtocolViolation, "first message on a connection must be a connect frame")
+		spanError(ctx, "latchwire: first frame was not connect", report.New("first message was not a connect frame"))
+		s.sendConnectionErrorDirect(conn, "first message on a connection must be a connect frame")
 		return false
 	}
 	if s.opts.ProtocolName != "" && env.Protocol != "" && env.Protocol != s.opts.ProtocolName {
-		s.sendConnectionErrorDirect(conn, ErrCodeProtocolViolation, "protocol name mismatch")
+		spanError(ctx, "latchwire: protocol name mismatch",
+			report.New("protocol name mismatch"),
+			attribute.String("latchwire.protocol", s.opts.ProtocolName))
+		s.sendConnectionErrorDirect(conn, "protocol name mismatch")
 		return false
 	}
 	if s.opts.ProtocolVersion != "" && env.Version != "" && env.Version != s.opts.ProtocolVersion {
-		s.sendConnectionErrorDirect(conn, ErrCodeProtocolViolation, "protocol version mismatch")
+		spanError(ctx, "latchwire: protocol version mismatch",
+			report.New("protocol version mismatch"),
+			attribute.String("latchwire.version", s.opts.ProtocolVersion))
+		s.sendConnectionErrorDirect(conn, "protocol version mismatch")
 		return false
 	}
 
@@ -249,21 +273,30 @@ func (s *Server[C]) handshake(conn *Conn[C]) bool {
 		payload = json.RawMessage("{}")
 	}
 	if err := s.connectVal.ValidateJSON(payload); err != nil {
-		s.sendConnectionErrorDirect(conn, ErrCodeInvalidConnectPayload, "connect payload failed schema validation")
+		spanError(ctx, "latchwire: connect payload failed schema validation", err)
+		s.sendConnectionErrorDirect(conn, "connect payload failed schema validation")
 		return false
 	}
 
 	paramsPtr := reflect.New(s.connectType)
 	if err := json.Unmarshal(payload, paramsPtr.Interface()); err != nil {
-		s.sendConnectionErrorDirect(conn, ErrCodeInvalidConnectPayload, "malformed connect payload")
+		spanError(ctx, "latchwire: malformed connect payload", err)
+		s.sendConnectionErrorDirect(conn, "malformed connect payload")
 		return false
 	}
 	conn.params = paramsPtr.Elem().Interface().(C)
 
 	if s.onConnect != nil {
 		if err := s.callOnConnect(conn); err != nil {
-			code, message := errorCodeAndMessage(err, ErrCodeConnectRejected, "connection rejected", s.opts.Debug)
-			s.sendConnectionErrorDirect(conn, code, message)
+			userMessage := err.UserMessage()
+			err = err.Wrap(
+				"connection rejected",
+				report.NotFoundMessage(userMessage),
+				report.NotPermittedMessage(userMessage),
+			).Dump("phase", "connect")
+			message := reportMessage(err, "connection rejected", s.opts.Debug)
+			spanError(ctx, "latchwire: OnConnect rejected", err)
+			s.sendConnectionErrorDirect(conn, message)
 			return false
 		}
 	}
@@ -274,17 +307,18 @@ func (s *Server[C]) handshake(conn *Conn[C]) bool {
 		Version:  s.opts.ProtocolVersion,
 	}
 	if err := conn.flushAfterConnect(connectedEnv); err != nil {
-		s.logf(conn.ctx, slog.LevelWarn, "latchwire: failed to flush connected frame", "error", err)
+		spanError(conn.ctx, "latchwire: failed to flush connected frame", err)
 		return false
 	}
+	span.SetStatus(codes.Ok, "")
 	return true
 }
 
-func (s *Server[C]) callOnConnect(conn *Conn[C]) (err error) {
+func (s *Server[C]) callOnConnect(conn *Conn[C]) (err report.Err) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logf(conn.ctx, slog.LevelError, "latchwire: OnConnect panicked", "panic", r)
-			err = NewError(ErrCodeConnectRejected, "connection rejected")
+			spanError(conn.ctx, "latchwire: OnConnect panicked", panicReport(r))
+			err = report.New("connection rejected").Internal()
 		}
 	}()
 	return s.onConnect(conn.ctx, conn)
@@ -295,10 +329,10 @@ func (s *Server[C]) callOnConnect(conn *Conn[C]) (err error) {
 // before "connected" is sent, nothing else can possibly be writing to the
 // socket (event sends are buffered, not queued, until flushAfterConnect
 // runs), so there is no concurrent-write hazard.
-func (s *Server[C]) sendConnectionErrorDirect(conn *Conn[C], code, message string) {
-	env := wire.Envelope{Type: wire.FrameConnectionError, Error: &wire.Error{Code: code, Message: message}}
+func (s *Server[C]) sendConnectionErrorDirect(conn *Conn[C], message string) {
+	env := wire.Envelope{Type: wire.FrameConnectionError, Error: message}
 	if err := conn.writeEnvelope(env); err != nil {
-		s.logf(conn.ctx, slog.LevelWarn, "latchwire: failed to write connection_error frame", "error", err)
+		spanError(conn.ctx, "latchwire: failed to write connection_error frame", err)
 	}
 }
 
@@ -336,8 +370,9 @@ func (s *Server[C]) readLoop(conn *Conn[C]) {
 }
 
 func (s *Server[C]) protocolViolation(conn *Conn[C], message string) {
-	s.logf(conn.ctx, slog.LevelWarn, "latchwire: protocol violation", "message", message)
-	env := wire.Envelope{Type: wire.FrameConnectionError, Error: &wire.Error{Code: ErrCodeProtocolViolation, Message: message}}
+	spanError(conn.ctx, "latchwire: protocol violation", report.New(message),
+		attribute.String("protocol.message", message))
+	env := wire.Envelope{Type: wire.FrameConnectionError, Error: message}
 	_ = conn.enqueue(env)
 }
 
@@ -355,7 +390,7 @@ func (s *Server[C]) handleRequest(conn *Conn[C], env wire.Envelope) bool {
 	conn.inflightMu.Lock()
 	if _, dup := conn.inflight[env.ID]; dup {
 		conn.inflightMu.Unlock()
-		s.sendResponseError(conn, env.ID, ErrCodeDuplicateRequestID, "a request with this id is already in flight")
+		s.sendResponseError(conn, env.ID, "a request with this id is already in flight")
 		return true
 	}
 	reqCtx, cancel := context.WithCancel(conn.ctx)
@@ -385,11 +420,24 @@ func (s *Server[C]) handleRequest(conn *Conn[C], env wire.Envelope) bool {
 }
 
 func (s *Server[C]) dispatchMethod(ctx context.Context, conn *Conn[C], env wire.Envelope) {
+	ctx, span := s.opts.Tracer.Start(ctx, "latchwire.request",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("latchwire.method", env.Method),
+		),
+	)
+	defer span.End()
+
 	s.mu.Lock()
 	m, ok := s.methods[env.Method]
 	s.mu.Unlock()
 	if !ok {
-		s.sendResponseError(conn, env.ID, ErrCodeMethodNotFound, fmt.Sprintf("unknown method %q", env.Method))
+		message := fmt.Sprintf("unknown method %q", env.Method)
+		err := report.New(message).
+			Wrap(message).
+			Dump("method", env.Method)
+		spanError(ctx, "latchwire: method not found", err)
+		s.sendResponseError(conn, env.ID, err.UserMessage())
 		return
 	}
 
@@ -398,33 +446,37 @@ func (s *Server[C]) dispatchMethod(ctx context.Context, conn *Conn[C], env wire.
 		payload = json.RawMessage("{}")
 	}
 	if err := m.requestValidator.ValidateJSON(payload); err != nil {
-		s.sendResponseError(conn, env.ID, ErrCodeInvalidRequest, "request payload failed schema validation")
+		spanError(ctx, "latchwire: request payload failed schema validation", err)
+		s.sendResponseError(conn, env.ID, "request payload failed schema validation")
 		return
 	}
 
 	reqPtr := m.adapter.NewRequest()
 	if err := json.Unmarshal(payload, reqPtr); err != nil {
-		s.sendResponseError(conn, env.ID, ErrCodeInvalidRequest, "malformed request payload")
+		spanError(ctx, "latchwire: malformed request payload", err)
+		s.sendResponseError(conn, env.ID, "malformed request payload")
 		return
 	}
 
 	resp, wireErr := s.invokeHandler(ctx, conn, m, reqPtr)
 	if wireErr != nil {
-		s.sendResponseError(conn, env.ID, wireErr.Code, wireErr.Message)
+		s.sendResponseError(conn, env.ID, reportMessage(wireErr, "Internal error", s.opts.Debug))
 		return
 	}
 
 	raw, err := json.Marshal(resp)
 	if err != nil {
-		s.logf(conn.ctx, slog.LevelError, "latchwire: failed to marshal response", "method", env.Method, "error", err)
-		s.sendResponseError(conn, env.ID, ErrCodeInternal, "internal error")
+		spanError(ctx, "latchwire: failed to marshal response", err,
+			attribute.String("latchwire.method", env.Method))
+		s.sendResponseError(conn, env.ID, "internal error")
 		return
 	}
 
 	if m.responseValidator != nil {
 		if err := m.responseValidator.ValidateJSON(raw); err != nil {
-			s.logf(conn.ctx, slog.LevelError, "latchwire: response failed schema validation (this indicates a Latchwire bug)", "method", env.Method, "error", err)
-			s.sendResponseError(conn, env.ID, ErrCodeInternal, "internal error")
+			spanError(ctx, "latchwire: response failed schema validation (this indicates a Latchwire bug)", err,
+				attribute.String("latchwire.method", env.Method))
+			s.sendResponseError(conn, env.ID, "internal error")
 			return
 		}
 	}
@@ -434,50 +486,46 @@ func (s *Server[C]) dispatchMethod(ctx context.Context, conn *Conn[C], env wire.
 
 // invokeHandler calls the method's handler, recovering from panics and
 // mapping the result onto a wire error where applicable.
-func (s *Server[C]) invokeHandler(ctx context.Context, conn *Conn[C], m *methodEntry, reqPtr any) (resp any, wireErr *Error) {
+func (s *Server[C]) invokeHandler(ctx context.Context, conn *Conn[C], m *methodEntry, reqPtr any) (resp any, wireErr report.Err) {
 	connVal := reflect.ValueOf(conn)
 
 	defer func() {
 		if r := recover(); r != nil {
-			s.logf(conn.ctx, slog.LevelError, "latchwire: handler panicked", "method", m.name, "panic", r)
-			wireErr = NewError(ErrCodeInternal, "internal error")
+			spanError(ctx, "latchwire: handler panicked", panicReport(r),
+				attribute.String("latchwire.method", m.name))
+			wireErr = panicReport(r).
+				Wrap("handler panicked").
+				Dump("method", m.name)
 		}
 	}()
 
 	result, err := m.adapter.Call(ctx, connVal, reqPtr)
 	if err != nil {
-		code, message := errorCodeAndMessage(err, ErrCodeInternal, "internal error", s.opts.Debug)
-		if code != ErrCodeInternal {
-			s.logf(conn.ctx, slog.LevelDebug, "latchwire: handler returned application error", "method", m.name, "code", code)
-		} else {
-			s.logf(conn.ctx, slog.LevelError, "latchwire: handler returned error", "method", m.name, "error", err)
-		}
-		return nil, NewError(code, message)
+		userMessage := err.UserMessage()
+		err = err.Wrap(
+			"handler returned an error",
+			report.NotFoundMessage(userMessage),
+			report.NotPermittedMessage(userMessage),
+		).Dump("method", m.name)
+		spanError(ctx, "latchwire: handler returned an error", err,
+			attribute.String("latchwire.method", m.name))
+		return nil, err
 	}
 	return result, nil
 }
 
-func (s *Server[C]) sendResponseError(conn *Conn[C], id, code, message string) {
-	_ = conn.enqueue(wire.Envelope{Type: wire.FrameError, ID: id, Error: &wire.Error{Code: code, Message: message}})
+func (s *Server[C]) sendResponseError(conn *Conn[C], id, message string) {
+	_ = conn.enqueue(wire.Envelope{Type: wire.FrameError, ID: id, Error: message})
 }
 
-func (s *Server[C]) logf(ctx context.Context, level slog.Level, msg string, args ...any) {
-	if s.opts.Logger == nil {
-		return
-	}
-	s.opts.Logger.Log(ctx, level, msg, args...)
-}
-
-// errorCodeAndMessage extracts a wire code/message pair from err: a *Error
-// keeps its own code and message verbatim; anything else becomes
-// defaultCode with defaultMessage, unless debug is enabled, in which case
-// the underlying error string is included instead.
-func errorCodeAndMessage(err error, defaultCode, defaultMessage string, debug bool) (code, message string) {
-	if appErr, ok := err.(*Error); ok {
-		return appErr.Code, appErr.Message
-	}
+// reportMessage returns a safe report message for the wire. Debug mode is
+// intentionally limited to explicitly requested development environments.
+func reportMessage(err report.Err, fallback string, debug bool) string {
 	if debug {
-		return defaultCode, err.Error()
+		return err.String()
 	}
-	return defaultCode, defaultMessage
+	if message := err.UserMessage(); message != "" && message != "Internal error" {
+		return message
+	}
+	return fallback
 }

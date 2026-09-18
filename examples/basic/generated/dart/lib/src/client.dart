@@ -13,8 +13,12 @@ class BasicClient {
   BasicClient(this.options);
 
   Future<ConnectedBasicClient> connect(ConnectParams params) async {
-    final handshake =
-        await connectSocket(options.url, "basic", "1", params.toJson());
+    final handshake = await connectSocket(
+      options.url,
+      "basic",
+      "1",
+      params.toJson(),
+    );
     return ConnectedBasicClient(handshake);
   }
 }
@@ -37,12 +41,14 @@ class ConnectedBasicClient extends BaseConnection {
   void dispatchEvent(String? event, dynamic payload) {
     switch (event) {
       case "message.received":
-        _messageReceivedController
-            .add(MessageReceived.fromJson(payload as Map<String, dynamic>));
+        _messageReceivedController.add(
+          MessageReceived.fromJson(payload as Map<String, dynamic>),
+        );
         break;
       case "presence.changed":
-        _presenceChangedController
-            .add(PresenceChanged.fromJson(payload as Map<String, dynamic>));
+        _presenceChangedController.add(
+          PresenceChanged.fromJson(payload as Map<String, dynamic>),
+        );
         break;
       default:
         break;
@@ -67,10 +73,10 @@ class _BasicClientProfileNamespace {
   _BasicClientProfileNamespace(this._client);
 
   Future<ProfileGetResponse> get(ProfileGetRequest req) => _client.call(
-        "profile.get",
-        req.toJson(),
-        (raw) => ProfileGetResponse.fromJson(raw as Map<String, dynamic>),
-      );
+    "profile.get",
+    req.toJson(),
+    (raw) => ProfileGetResponse.fromJson(raw as Map<String, dynamic>),
+  );
 }
 
 class _BasicClientRoomNamespace {
@@ -79,14 +85,14 @@ class _BasicClientRoomNamespace {
   _BasicClientRoomNamespace(this._client);
 
   Future<ListRoomsResponse> list(ListRoomsRequest req) => _client.call(
-        "room.list",
-        req.toJson(),
-        (raw) => ListRoomsResponse.fromJson(raw as Map<String, dynamic>),
-      );
+    "room.list",
+    req.toJson(),
+    (raw) => ListRoomsResponse.fromJson(raw as Map<String, dynamic>),
+  );
 
   Future<SubscribeResponse> subscribe(SubscribeRequest req) => _client.call(
-        "room.subscribe",
-        req.toJson(),
-        (raw) => SubscribeResponse.fromJson(raw as Map<String, dynamic>),
-      );
+    "room.subscribe",
+    req.toJson(),
+    (raw) => SubscribeResponse.fromJson(raw as Map<String, dynamic>),
+  );
 }

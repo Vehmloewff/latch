@@ -27,7 +27,13 @@ Go types + registered handlers
 
 ## The smallest complete example
 
+The server-side handler and connection callbacks return `report.Err`, which
+adds safe user messages and structured diagnostic context to application
+errors:
+
 ```go
+import "github.com/vehmloewff/report"
+
 type ConnectParams struct {
     Token string `json:"token"`
 }
@@ -54,7 +60,7 @@ func BuildAPI() *latchwire.Server[ConnectParams] {
     tick := latchwire.Event[Tick]("tick")
     lw.RegisterEvent(tick)
 
-    lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) error {
+    lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
         go func() {
             ticker := time.NewTicker(time.Second)
             defer ticker.Stop()
@@ -74,7 +80,7 @@ func BuildAPI() *latchwire.Server[ConnectParams] {
         ctx context.Context,
         conn *latchwire.Conn[ConnectParams],
         req AddRequest,
-    ) (AddResponse, error) {
+    ) (AddResponse, report.Err) {
         return AddResponse{Result: req.A + req.B}, nil
     })
     if err != nil {
@@ -172,7 +178,7 @@ missing feature in the generated code.
 2. **Create a server**: `latchwire.New[ConnectParams](latchwire.Options{...})`.
 3. **Register methods**: `lw.Register("user.get", handler)`, where `handler`
    has the one canonical signature
-   `func(context.Context, *latchwire.Conn[C], Request) (Response, error)`.
+   `func(context.Context, *latchwire.Conn[C], Request) (Response, report.Err)`.
    The signature is validated immediately, not on the first request.
 4. **Declare and register events**: `evt := latchwire.Event[T]("name")`,
    then `lw.RegisterEvent(evt)`.
@@ -215,7 +221,7 @@ nullable semantics (`json:"name"` vs `,omitempty` vs pointer vs both).
 
 ```
 server.go, conn.go, method.go, event.go,
-errors.go, protocol.go, generate.go    Public API (small and intentional)
+protocol.go, generate.go               Public API (small and intentional)
 client/                                Public Go client runtime
 reflectapi/                            The one reflection → IR stage
 protocol/                              The normalized IR

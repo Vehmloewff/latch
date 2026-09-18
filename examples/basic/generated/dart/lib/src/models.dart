@@ -6,10 +6,7 @@ class Address {
   final String city;
   final String? zip;
 
-  Address({
-    required this.city,
-    this.zip,
-  });
+  Address({required this.city, this.zip});
 
   factory Address.fromJson(Map<String, dynamic> json) {
     return Address(
@@ -33,14 +30,10 @@ class Address {
 class ConnectParams {
   final String token;
 
-  ConnectParams({
-    required this.token,
-  });
+  ConnectParams({required this.token});
 
   factory ConnectParams.fromJson(Map<String, dynamic> json) {
-    return ConnectParams(
-      token: json["token"] as String,
-    );
+    return ConnectParams(token: json["token"] as String);
   }
 
   Map<String, dynamic> toJson() {
@@ -66,9 +59,7 @@ class ListRoomsRequest {
 class ListRoomsResponse {
   final List<String> rooms;
 
-  ListRoomsResponse({
-    required this.rooms,
-  });
+  ListRoomsResponse({required this.rooms});
 
   factory ListRoomsResponse.fromJson(Map<String, dynamic> json) {
     return ListRoomsResponse(
@@ -87,10 +78,7 @@ class MessageReceived {
   final String room;
   final String text;
 
-  MessageReceived({
-    required this.room,
-    required this.text,
-  });
+  MessageReceived({required this.room, required this.text});
 
   factory MessageReceived.fromJson(Map<String, dynamic> json) {
     return MessageReceived(
@@ -111,10 +99,7 @@ class PresenceChanged {
   final String userId;
   final bool online;
 
-  PresenceChanged({
-    required this.userId,
-    required this.online,
-  });
+  PresenceChanged({required this.userId, required this.online});
 
   factory PresenceChanged.fromJson(Map<String, dynamic> json) {
     return PresenceChanged(
@@ -166,14 +151,10 @@ class Profile {
 class ProfileGetRequest {
   final String userId;
 
-  ProfileGetRequest({
-    required this.userId,
-  });
+  ProfileGetRequest({required this.userId});
 
   factory ProfileGetRequest.fromJson(Map<String, dynamic> json) {
-    return ProfileGetRequest(
-      userId: json["userId"] as String,
-    );
+    return ProfileGetRequest(userId: json["userId"] as String);
   }
 
   Map<String, dynamic> toJson() {
@@ -186,9 +167,7 @@ class ProfileGetRequest {
 class ProfileGetResponse {
   final Profile profile;
 
-  ProfileGetResponse({
-    required this.profile,
-  });
+  ProfileGetResponse({required this.profile});
 
   factory ProfileGetResponse.fromJson(Map<String, dynamic> json) {
     return ProfileGetResponse(
@@ -206,14 +185,10 @@ class ProfileGetResponse {
 class SubscribeRequest {
   final String room;
 
-  SubscribeRequest({
-    required this.room,
-  });
+  SubscribeRequest({required this.room});
 
   factory SubscribeRequest.fromJson(Map<String, dynamic> json) {
-    return SubscribeRequest(
-      room: json["room"] as String,
-    );
+    return SubscribeRequest(room: json["room"] as String);
   }
 
   Map<String, dynamic> toJson() {
@@ -226,14 +201,10 @@ class SubscribeRequest {
 class SubscribeResponse {
   final bool ok;
 
-  SubscribeResponse({
-    required this.ok,
-  });
+  SubscribeResponse({required this.ok});
 
   factory SubscribeResponse.fromJson(Map<String, dynamic> json) {
-    return SubscribeResponse(
-      ok: json["ok"] as bool,
-    );
+    return SubscribeResponse(ok: json["ok"] as bool);
   }
 
   Map<String, dynamic> toJson() {

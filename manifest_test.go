@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/report"
 )
 
 func buildManifestFixtureServer(t *testing.T) *latchwire.Server[ConnectParams] {
@@ -16,7 +17,7 @@ func buildManifestFixtureServer(t *testing.T) *latchwire.Server[ConnectParams] {
 	if err := srv.RegisterEvent(tick); err != nil {
 		t.Fatalf("RegisterEvent: %v", err)
 	}
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, error) {
+	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
 		return AddResponse{Result: req.A + req.B}, nil
 	})
 	if err != nil {

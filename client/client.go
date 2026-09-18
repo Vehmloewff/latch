@@ -13,8 +13,13 @@ import (
 	"sync/atomic"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/report"
 )
 
 // eventBufferSize bounds the per-event channel returned by RegisterEvent.
@@ -23,20 +28,16 @@ import (
 // blocking the connection's single read goroutine.
 const eventBufferSize = 64
 
-// Error is Latchwire's structured application/protocol error, matching the
-// wire error envelope's {code, message} shape.
-type Error struct {
-	Code    string
-	Message string
-}
-
-func (e *Error) Error() string {
-	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+func recordSpanError(span trace.Span, message string, err error) {
+	if err != nil {
+		span.RecordError(err)
+	}
+	span.SetStatus(codes.Error, message)
 }
 
 type pendingResult struct {
 	payload json.RawMessage
-	err     *Error
+	err     report.Err
 }
 
 // Conn is a live Latchwire connection. Generated code never constructs one
@@ -65,20 +66,32 @@ type Conn struct {
 // Connect dials url, performs the Latchwire connect handshake with the
 // given protocol name/version and connect payload, and returns a Conn once
 // the server's "connected" frame arrives. If the server rejects the
-// connection, the returned error is a *Error carrying its wire code.
+// connection, the returned error is a report.Err carrying its message.
 //
 // Connect does not start reading further frames — the caller (generated
 // code) must finish wiring up event handlers via RegisterEvent and then
 // call Start.
 func Connect(ctx context.Context, url string, protocolName string, protocolVersion string, payload any) (*Conn, error) {
+	ctx, span := otel.Tracer("github.com/vehmloewff/latchwire/client").Start(ctx, "latchwire.client.connect",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("latchwire.protocol", protocolName),
+			attribute.String("latchwire.version", protocolVersion),
+		),
+	)
+	defer span.End()
+
 	ws, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "latchwire: dial failed")
 		return nil, fmt.Errorf("latchwire: dial: %w", err)
 	}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "")
+		recordSpanError(span, "latchwire: marshal connect payload failed", err)
 		return nil, fmt.Errorf("latchwire: marshal connect payload: %w", err)
 	}
 
@@ -90,28 +103,33 @@ func Connect(ctx context.Context, url string, protocolName string, protocolVersi
 	})
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "")
+		recordSpanError(span, "latchwire: marshal connect frame failed", err)
 		return nil, fmt.Errorf("latchwire: marshal connect frame: %w", err)
 	}
 
 	if err := ws.Write(ctx, websocket.MessageText, connectRaw); err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "")
+		recordSpanError(span, "latchwire: write connect frame failed", err)
 		return nil, fmt.Errorf("latchwire: write connect frame: %w", err)
 	}
 
 	_, respRaw, err := ws.Read(ctx)
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "")
+		recordSpanError(span, "latchwire: read handshake response failed", err)
 		return nil, fmt.Errorf("latchwire: read handshake response: %w", err)
 	}
 
 	var env wire.Envelope
 	if err := json.Unmarshal(respRaw, &env); err != nil {
 		_ = ws.Close(websocket.StatusProtocolError, "malformed handshake response")
+		recordSpanError(span, "latchwire: malformed handshake response", err)
 		return nil, fmt.Errorf("latchwire: malformed handshake response: %w", err)
 	}
 
 	switch env.Type {
 	case wire.FrameConnected:
+		span.SetStatus(codes.Ok, "")
 		return &Conn{
 			ws:            ws,
 			pending:       make(map[string]chan pendingResult),
@@ -121,13 +139,19 @@ func Connect(ctx context.Context, url string, protocolName string, protocolVersi
 
 	case wire.FrameConnectionError:
 		_ = ws.Close(websocket.StatusNormalClosure, "")
-		if env.Error != nil {
-			return nil, &Error{Code: env.Error.Code, Message: env.Error.Message}
+		if env.Error != "" {
+			err := wireErrToError(env.Error, "connection rejected")
+			recordSpanError(span, "latchwire: connection rejected", err)
+			return nil, err
 		}
-		return nil, &Error{Code: "internal_error", Message: "connection rejected"}
+		err := wireErrToError("", "connection rejected")
+		recordSpanError(span, "latchwire: connection rejected", err)
+		return nil, err
 
 	default:
 		_ = ws.Close(websocket.StatusProtocolError, "unexpected frame during handshake")
+		recordSpanError(span, "latchwire: unexpected frame during handshake",
+			report.New(fmt.Sprintf("unexpected frame type %q", env.Type)))
 		return nil, fmt.Errorf("latchwire: unexpected frame type %q during handshake", env.Type)
 	}
 }
@@ -172,24 +196,25 @@ func (c *Conn) readLoop() {
 		case wire.FrameResponse:
 			c.deliver(env.ID, env.Payload, nil)
 		case wire.FrameError:
-			c.deliver(env.ID, nil, wireErrToError(env.Error, "internal_error", "internal error"))
+			c.deliver(env.ID, nil, wireErrToError(env.Error, "internal error"))
 		case wire.FrameEvent:
 			c.dispatchEvent(env.Event, env.Payload)
 		case wire.FrameConnectionError:
-			c.failAll(wireErrToError(env.Error, "internal_error", "connection error"))
+			err := wireErrToError(env.Error, "connection error")
+			c.failAll(err)
 			return
 		}
 	}
 }
 
-func wireErrToError(we *wire.Error, defaultCode, defaultMessage string) *Error {
-	if we == nil {
-		return &Error{Code: defaultCode, Message: defaultMessage}
+func wireErrToError(message, defaultMessage string) report.Err {
+	if message == "" {
+		message = defaultMessage
 	}
-	return &Error{Code: we.Code, Message: we.Message}
+	return report.New(message).Wrap(message).Dump("source", "latchwire")
 }
 
-func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {
+func (c *Conn) deliver(id string, payload json.RawMessage, err report.Err) {
 	if id == "" {
 		return
 	}
@@ -213,7 +238,7 @@ func (c *Conn) dispatchEvent(name string, raw json.RawMessage) {
 	}
 }
 
-func (c *Conn) failAll(err *Error) {
+func (c *Conn) failAll(err report.Err) {
 	c.pendingMu.Lock()
 	pending := c.pending
 	c.pending = make(map[string]chan pendingResult)
@@ -226,7 +251,7 @@ func (c *Conn) failAll(err *Error) {
 func (c *Conn) terminate() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		c.failAll(&Error{Code: "connection_closed", Message: "the connection is closed"})
+		c.failAll(report.New("the connection is closed"))
 
 		c.eventMu.Lock()
 		closers := c.eventClosers
@@ -241,14 +266,23 @@ func (c *Conn) terminate() {
 // call sends a request frame for method and blocks until its response,
 // error, ctx cancellation, or connection close.
 func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessage, error) {
+	ctx, span := otel.Tracer("github.com/vehmloewff/latchwire/client").Start(ctx, "latchwire.client.request",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("latchwire.method", method)),
+	)
+	defer span.End()
+
 	select {
 	case <-c.closed:
-		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
+		err := report.New("the connection is closed")
+		recordSpanError(span, "latchwire: connection closed", err)
+		return nil, err
 	default:
 	}
 
 	raw, err := json.Marshal(req)
 	if err != nil {
+		recordSpanError(span, "latchwire: marshal request failed", err)
 		return nil, fmt.Errorf("latchwire: marshal request: %w", err)
 	}
 
@@ -264,6 +298,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
+		recordSpanError(span, "latchwire: marshal request frame failed", err)
 		return nil, fmt.Errorf("latchwire: marshal request frame: %w", err)
 	}
 
@@ -274,22 +309,28 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
+		recordSpanError(span, "latchwire: write request failed", writeErr)
 		return nil, fmt.Errorf("latchwire: write request: %w", writeErr)
 	}
 
 	select {
 	case res := <-ch:
 		if res.err != nil {
+			recordSpanError(span, "latchwire: request returned an error", res.err)
 			return nil, res.err
 		}
+		span.SetStatus(codes.Ok, "")
 		return res.payload, nil
 	case <-ctx.Done():
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
+		recordSpanError(span, "latchwire: request canceled", ctx.Err())
 		return nil, ctx.Err()
 	case <-c.closed:
-		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
+		err := report.New("the connection is closed")
+		recordSpanError(span, "latchwire: connection closed", err)
+		return nil, err
 	}
 }
 

@@ -9,16 +9,19 @@ package latchwire
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
 	"sync"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/vehmloewff/latchwire/jsonschema"
 	"github.com/vehmloewff/latchwire/names"
 	"github.com/vehmloewff/latchwire/protocol"
 	"github.com/vehmloewff/latchwire/reflectapi"
+	"github.com/vehmloewff/report"
 )
 
 // Default configuration values, used whenever the corresponding Options
@@ -60,16 +63,15 @@ type Options struct {
 	// response shape.
 	ValidateResponses bool
 
-	// Debug, when true, includes the underlying Go error string in
-	// ErrCodeInternal wire errors. Never enable this in production: it can
-	// leak internal details (stack traces, database errors, file paths).
+	// Debug, when true, includes report details in internal wire errors. Never
+	// enable this in production: it can leak internal details (stack traces,
+	// database errors, file paths).
 	Debug bool
 
-	// Logger receives structured lifecycle logs (connection accepted,
-	// connect rejected, protocol violations, handler panics, transport
-	// errors). Connection params are never logged, since they may contain
-	// secrets. A nil Logger disables logging.
-	Logger *slog.Logger
+	// Tracer receives OpenTelemetry spans and events for connection lifecycle,
+	// protocol violations, transport failures, and handler execution. A nil
+	// Tracer uses the global OpenTelemetry tracer.
+	Tracer trace.Tracer
 
 	// OriginPatterns lists allowed WebSocket origins, matched the same way
 	// as github.com/coder/websocket's AcceptOptions.OriginPatterns. Leave
@@ -91,6 +93,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.MaxMessageBytes <= 0 {
 		out.MaxMessageBytes = DefaultMaxMessageBytes
+	}
+	if out.Tracer == nil {
+		out.Tracer = otel.Tracer(instrumentationName)
 	}
 	return out
 }
@@ -130,7 +135,7 @@ type Server[C any] struct {
 	events     map[string]*eventEntry
 	eventOrder []string
 
-	onConnect func(context.Context, *Conn[C]) error
+	onConnect func(context.Context, *Conn[C]) report.Err
 
 	ir *protocol.Protocol
 
@@ -161,7 +166,7 @@ func New[C any](opts Options) *Server[C] {
 
 // Register declares an RPC method. handler must have exactly the shape:
 //
-//	func(context.Context, *latchwire.Conn[C], Request) (Response, error)
+//	func(context.Context, *latchwire.Conn[C], Request) (Response, report.Err)
 //
 // where Request and Response are named, exported struct types and C matches
 // this Server's connect-parameter type. The signature is validated
@@ -230,7 +235,7 @@ func (s *Server[C]) RegisterEvent(e EventRegistration) error {
 // decoding but before the "connected" frame is sent. Registering a second
 // OnConnect handler returns an error. OnConnect itself is optional: a
 // server with no OnConnect accepts every schema-valid connection.
-func (s *Server[C]) OnConnect(fn func(context.Context, *Conn[C]) error) error {
+func (s *Server[C]) OnConnect(fn func(context.Context, *Conn[C]) report.Err) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

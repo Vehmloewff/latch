@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/report"
 )
 
 // ConnectParams is the connection setup payload every client must send.
@@ -105,20 +106,23 @@ func Build() *latchwire.Server[ConnectParams] {
 		panic(fmt.Errorf("basic api: %w", err))
 	}
 
-	err := lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) error {
+	err := lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
 		if conn.Params().Token == "" {
-			return latchwire.NewError("unauthorized", "a token is required")
+			return report.New("a token is required").Hint(report.HintNotPermitted)
 		}
 		if err := MessageReceivedEvent.Send(conn, MessageReceived{
 			Room: "lobby",
 			Text: "welcome",
 		}); err != nil {
-			return err
+			return report.From(err)
 		}
-		return PresenceChangedEvent.Send(conn, PresenceChanged{
+		if err := PresenceChangedEvent.Send(conn, PresenceChanged{
 			UserID: "self",
 			Online: true,
-		})
+		}); err != nil {
+			return report.From(err)
+		}
+		return nil
 	})
 	if err != nil {
 		panic(fmt.Errorf("basic api: %w", err))
@@ -128,7 +132,7 @@ func Build() *latchwire.Server[ConnectParams] {
 		ctx context.Context,
 		conn *latchwire.Conn[ConnectParams],
 		req SubscribeRequest,
-	) (SubscribeResponse, error) {
+	) (SubscribeResponse, report.Err) {
 		return SubscribeResponse{OK: true}, nil
 	})
 	if err != nil {
@@ -139,16 +143,16 @@ func Build() *latchwire.Server[ConnectParams] {
 		ctx context.Context,
 		conn *latchwire.Conn[ConnectParams],
 		req ListRoomsRequest,
-	) (ListRoomsResponse, error) {
+	) (ListRoomsResponse, report.Err) {
 		return ListRoomsResponse{Rooms: []string{"general", "lobby", "random"}}, nil
 	})
 	if err != nil {
 		panic(fmt.Errorf("basic api: %w", err))
 	}
 
-	err = lw.Register("profile.get", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req ProfileGetRequest) (ProfileGetResponse, error) {
+	err = lw.Register("profile.get", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req ProfileGetRequest) (ProfileGetResponse, report.Err) {
 		if req.UserID == "missing" {
-			return ProfileGetResponse{}, latchwire.NewError("not_found", "user not found")
+			return ProfileGetResponse{}, report.New("user not found").Hint(report.HintNotFound)
 		}
 
 		nickname := "the " + req.UserID

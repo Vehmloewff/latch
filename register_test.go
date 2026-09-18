@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/report"
 )
 
 type OtherConnectParams struct {
 	APIKey string `json:"apiKey"`
 }
 
-func validHandler(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, error) {
+func validHandler(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
 	return AddResponse{}, nil
 }
 
@@ -134,10 +135,10 @@ func TestRegisterEventRejectsDuplicateAndReservedAndEmpty(t *testing.T) {
 
 func TestOnConnectRejectsSecondRegistration(t *testing.T) {
 	srv := latchwire.New[ConnectParams](latchwire.Options{})
-	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) error { return nil }); err != nil {
+	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err { return nil }); err != nil {
 		t.Fatalf("first OnConnect: %v", err)
 	}
-	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) error { return nil }); err == nil {
+	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err { return nil }); err == nil {
 		t.Fatalf("expected error for second OnConnect registration")
 	}
 }
@@ -150,7 +151,7 @@ func TestRegistrationRejectedAfterFinalization(t *testing.T) {
 	if err := srv.Register("late", validHandler); err == nil {
 		t.Fatalf("expected error registering a method after finalization")
 	}
-	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) error { return nil }); err == nil {
+	if err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err { return nil }); err == nil {
 		t.Fatalf("expected error registering OnConnect after finalization")
 	}
 }

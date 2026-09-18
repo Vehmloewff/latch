@@ -9,13 +9,12 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Thrown for every RPC rejection and connect failure.
 class LatchwireError extends Error {
-  final String code;
   final String message;
 
-  LatchwireError(this.code, this.message);
+  LatchwireError(this.message);
 
   @override
-  String toString() => 'LatchwireError($code): $message';
+  String toString() => 'LatchwireError: $message';
 }
 
 /// Thrown when a value received from the server does not match a
@@ -89,8 +88,7 @@ Future<HandshakeResult> connectSocket(
         settled = true;
         channel.sink.close(1002, 'malformed handshake response');
         completer.completeError(
-          LatchwireError(
-              'protocol_violation', 'malformed response during connect'),
+          LatchwireError('malformed response during connect'),
         );
         return;
       }
@@ -100,36 +98,34 @@ Future<HandshakeResult> connectSocket(
         completer.complete(HandshakeResult(channel, sub, bufferedMessages));
       } else if (env['type'] == 'connection_error') {
         settled = true;
-        final err = env['error'] as Map<String, dynamic>?;
         channel.sink.close();
-        completer.completeError(LatchwireError(
-          err?['code'] as String? ?? 'internal_error',
-          err?['message'] as String? ?? 'connection rejected',
-        ));
+        completer.completeError(
+          LatchwireError(env['error'] as String? ?? 'connection rejected'),
+        );
       }
     },
     onError: (Object err, StackTrace st) {
       if (settled) return;
       settled = true;
-      completer
-          .completeError(LatchwireError('transport_error', err.toString()));
+      completer.completeError(LatchwireError(err.toString()));
     },
     onDone: () {
       if (settled) return;
       settled = true;
       completer.completeError(
-        LatchwireError('connection_closed',
-            'connection closed before the handshake completed'),
+        LatchwireError('connection closed before the handshake completed'),
       );
     },
   );
 
-  channel.sink.add(jsonEncode({
-    'type': 'connect',
-    'protocol': protocolName,
-    'version': protocolVersion,
-    'payload': payload,
-  }));
+  channel.sink.add(
+    jsonEncode({
+      'type': 'connect',
+      'protocol': protocolName,
+      'version': protocolVersion,
+      'payload': payload,
+    }),
+  );
 
   return completer.future;
 }
@@ -153,8 +149,8 @@ abstract class BaseConnection {
   bool _closed = false;
 
   BaseConnection(HandshakeResult handshake)
-      : _channel = handshake.channel,
-        _subscription = handshake.subscription {
+    : _channel = handshake.channel,
+      _subscription = handshake.subscription {
     // Take over the single subscription connectSocket already created
     // (see HandshakeResult's doc comment) by replacing its callbacks,
     // rather than calling channel.stream.listen() again - which would
@@ -196,14 +192,19 @@ abstract class BaseConnection {
     TResp Function(dynamic raw) decode,
   ) {
     if (_closed) {
-      return Future<TResp>.error(
-          LatchwireError('connection_closed', 'the connection is closed'));
+      return Future<TResp>.error(LatchwireError('the connection is closed'));
     }
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
     _pending[id] = _PendingRequest(completer);
-    _channel.sink.add(jsonEncode(
-        {'type': 'request', 'id': id, 'method': method, 'payload': payload}));
+    _channel.sink.add(
+      jsonEncode({
+        'type': 'request',
+        'id': id,
+        'method': method,
+        'payload': payload,
+      }),
+    );
     return completer.future.then((raw) => decode(raw));
   }
 
@@ -228,21 +229,17 @@ abstract class BaseConnection {
       case 'error':
         final id = env['id'] as String?;
         final pending = id != null ? _pending.remove(id) : null;
-        final err = env['error'] as Map<String, dynamic>?;
-        pending?.completer.completeError(LatchwireError(
-          err?['code'] as String? ?? 'internal_error',
-          err?['message'] as String? ?? 'internal error',
-        ));
+        pending?.completer.completeError(
+          LatchwireError(env['error'] as String? ?? 'internal error'),
+        );
         break;
       case 'event':
         dispatchEvent(env['event'] as String?, env['payload']);
         break;
       case 'connection_error':
-        final err = env['error'] as Map<String, dynamic>?;
-        _failAllPending(LatchwireError(
-          err?['code'] as String? ?? 'internal_error',
-          err?['message'] as String? ?? 'connection error',
-        ));
+        _failAllPending(
+          LatchwireError(env['error'] as String? ?? 'connection error'),
+        );
         _handleClose();
         break;
       default:
@@ -253,8 +250,7 @@ abstract class BaseConnection {
   void _handleClose() {
     if (_closed) return;
     _closed = true;
-    _failAllPending(
-        LatchwireError('connection_closed', 'the connection is closed'));
+    _failAllPending(LatchwireError('the connection is closed'));
   }
 
   void _failAllPending(LatchwireError err) {

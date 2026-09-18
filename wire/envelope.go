@@ -17,13 +17,6 @@ const (
 	FrameConnectionError FrameType = "connection_error"
 )
 
-// Error is the structured error carried by "error" and "connection_error"
-// frames.
-type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
 // Envelope is the single discriminated-union message shape used for every
 // frame type. Fields irrelevant to a given Type are simply omitted.
 type Envelope struct {
@@ -43,6 +36,7 @@ type Envelope struct {
 	// request payload, response payload, connect payload, or event payload
 	Payload json.RawMessage `json:"payload,omitempty"`
 
-	// error / connection_error
-	Error *Error `json:"error,omitempty"`
+	// error / connection_error. Errors intentionally carry only a safe,
+	// human-readable report message.
+	Error string `json:"error,omitempty"`
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/vehmloewff/latchwire/wire"
 )
@@ -74,7 +74,6 @@ type outboundFrame struct {
 type Conn[C any] struct {
 	server *Server[C]
 	ws     *websocket.Conn
-	logger *slog.Logger
 
 	params C
 
@@ -116,7 +115,6 @@ func newConn[C any](srv *Server[C], ws *websocket.Conn, parentCtx context.Contex
 	c := &Conn[C]{
 		server:   srv,
 		ws:       ws,
-		logger:   srv.opts.Logger,
 		ctx:      ctx,
 		cancel:   cancel,
 		outbound: make(chan outboundFrame, queueSize),
@@ -168,7 +166,8 @@ func (c *Conn[C]) OnClose(fn func()) {
 func (c *Conn[C]) runOnCloseFn(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.logf(slog.LevelError, "latchwire: OnClose callback panicked", "panic", r)
+			spanError(c.ctx, "latchwire: OnClose callback panicked", panicReport(r),
+				attribute.String("callback", "OnClose"))
 		}
 	}()
 	fn()
@@ -301,7 +300,7 @@ func (c *Conn[C]) writePump() {
 		select {
 		case f := <-c.outbound:
 			if err := c.writeEnvelope(f.env); err != nil {
-				c.logf(slog.LevelWarn, "latchwire: write failed, closing connection", "error", err)
+				spanError(c.ctx, "latchwire: write failed, closing connection", err)
 				go c.Close(CloseInternalError, "write error")
 				return
 			}
@@ -312,7 +311,7 @@ func (c *Conn[C]) writePump() {
 		select {
 		case f := <-c.outbound:
 			if err := c.writeEnvelope(f.env); err != nil {
-				c.logf(slog.LevelWarn, "latchwire: write failed, closing connection", "error", err)
+				spanError(c.ctx, "latchwire: write failed, closing connection", err)
 				go c.Close(CloseInternalError, "write error")
 				return
 			}
@@ -340,11 +339,4 @@ func (c *Conn[C]) writeEnvelope(env wire.Envelope) error {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	return c.ws.Write(ctx, websocket.MessageText, raw)
-}
-
-func (c *Conn[C]) logf(level slog.Level, msg string, args ...any) {
-	if c.logger == nil {
-		return
-	}
-	c.logger.Log(c.ctx, level, msg, args...)
 }
