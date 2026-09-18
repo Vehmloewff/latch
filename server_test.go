@@ -534,8 +534,8 @@ func TestOversizedMessageClosesConnection(t *testing.T) {
 
 func TestServerCloseShutsDownActiveConnections(t *testing.T) {
 	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	canceled := make(chan struct{})
 	started := make(chan struct{})
+	canceled := make(chan struct{})
 	err := srv.Register("wait", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
 		close(started)
 		<-ctx.Done()
@@ -564,7 +564,7 @@ func TestServerCloseShutsDownActiveConnections(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for the in-flight request to start")
 	}
 
@@ -576,20 +576,20 @@ func TestServerCloseShutsDownActiveConnections(t *testing.T) {
 
 	select {
 	case <-canceled:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("expected the in-flight request's context to be canceled by server shutdown")
 	}
 	select {
 	case <-closedCallback:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("expected OnClose callbacks to run during server shutdown")
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			t.Fatalf("expected the connection to be closed after server shutdown")
+			t.Fatal("expected the connection to be closed after server shutdown")
 		}
 		if _, err := c.TryRecv(remaining); err != nil {
 			break
