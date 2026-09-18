@@ -99,7 +99,7 @@ func (c *Client) Connect(protocol, version string, payload any) wire.Envelope {
 	if err != nil {
 		c.t.Fatalf("testutil: marshal connect payload: %v", err)
 	}
-	c.Send(wire.Envelope{Type: wire.FrameConnect, Protocol: protocol, Version: version, Payload: raw})
+	c.Send(wire.Envelope{Type: wire.FrameConnect, Version: version, Payload: raw})
 	return c.Recv()
 }
 

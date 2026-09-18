@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/latchwire/client"
 	"github.com/vehmloewff/latchwire/examples/basic/api"
 	basicclient "github.com/vehmloewff/latchwire/examples/basic/generated/golang"
 )
@@ -36,31 +38,33 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	defer cancel()
 
 	c := basicclient.New(wsURL)
-	conn, err := c.Connect(ctx, basicclient.ConnectParams{Token: "secret"})
+	conn, err := c.Connect(ctx)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	defer conn.Close()
 
-	select {
-	case welcome := <-conn.Events.MessageReceived():
-		if welcome.Room != "lobby" || welcome.Text != "welcome" {
-			t.Fatalf("unexpected welcome event: %+v", welcome)
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-conn.Events():
+			switch event.Kind {
+			case "message":
+				if event.Message == nil || event.Message.Room != "lobby" || event.Message.Text != "welcome" {
+					t.Fatalf("unexpected welcome event: %+v", event)
+				}
+			case "presence":
+				if event.Presence == nil || event.Presence.UserID != "self" || !event.Presence.Online {
+					t.Fatalf("unexpected presence event: %+v", event)
+				}
+			default:
+				t.Fatalf("unexpected event variant: %+v", event)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for event")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for welcome event")
 	}
 
-	select {
-	case presence := <-conn.Events.PresenceChanged():
-		if presence.UserID != "self" || !presence.Online {
-			t.Fatalf("unexpected presence event: %+v", presence)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for presence event")
-	}
-
-	result, err := conn.Room.Subscribe(ctx, basicclient.SubscribeRequest{Room: "general"})
+	result, err := conn.RoomSubscribe(ctx, basicclient.SubscribeRequest{Room: "general"})
 	if err != nil {
 		t.Fatalf("Room.Subscribe: %v", err)
 	}
@@ -68,7 +72,7 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 		t.Fatalf("expected OK=true, got %+v", result)
 	}
 
-	listed, err := conn.Room.List(ctx, basicclient.ListRoomsRequest{})
+	listed, err := conn.RoomList(ctx, basicclient.ListRoomsRequest{})
 	if err != nil {
 		t.Fatalf("Room.List: %v", err)
 	}
@@ -77,7 +81,7 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	}
 
 	// Nested types + optional/nullable fields.
-	profile, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "alice"})
+	profile, err := conn.ProfileGet(ctx, basicclient.ProfileGetRequest{UserID: "alice"})
 	if err != nil {
 		t.Fatalf("Profile.Get: %v", err)
 	}
@@ -88,7 +92,7 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 		t.Fatalf("expected nickname and zip to be present: %+v", profile)
 	}
 
-	noZipProfile, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "no-zip"})
+	noZipProfile, err := conn.ProfileGet(ctx, basicclient.ProfileGetRequest{UserID: "no-zip"})
 	if err != nil {
 		t.Fatalf("Profile.Get: %v", err)
 	}
@@ -97,12 +101,13 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	}
 
 	// Application error.
-	_, err = conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: "missing"})
+	_, err = conn.ProfileGet(ctx, basicclient.ProfileGetRequest{UserID: "missing"})
 	if err == nil {
 		t.Fatalf("expected profile.get(userId=missing) to fail")
 	}
-	if err.Error() != "user not found" {
-		t.Fatalf("expected user not found error, got %v", err)
+	var appErr *client.Error
+	if !errors.As(err, &appErr) || appErr.Code != "not_found" {
+		t.Fatalf("expected *client.Error{Code: not_found}, got %v", err)
 	}
 
 	// Concurrent calls: fire many requests at once and verify every
@@ -116,7 +121,7 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			userID := fmt.Sprintf("user-%d", i)
-			p, err := conn.Profile.Get(ctx, basicclient.ProfileGetRequest{UserID: userID})
+			p, err := conn.ProfileGet(ctx, basicclient.ProfileGetRequest{UserID: userID})
 			if err != nil {
 				errs <- err
 				return
@@ -134,12 +139,4 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 		}
 	}
 
-	badClient := basicclient.New(wsURL)
-	_, err = badClient.Connect(ctx, basicclient.ConnectParams{Token: ""})
-	if err == nil {
-		t.Fatalf("expected empty token to be rejected")
-	}
-	if err.Error() != "connect payload failed schema validation" {
-		t.Fatalf("expected connect payload error, got %v", err)
-	}
 }

@@ -18,8 +18,8 @@ type TypeScriptOptions struct {
 	// to, created if it does not already exist.
 	OutputDir string
 
-	// ClientName overrides the generated class name (default derived from
-	// Options.ProtocolName). See typescript.Options.ClientName.
+	// ClientName overrides the generated class name (default
+	// LatchwireClient). See typescript.Options.ClientName.
 	ClientName string
 }
 
@@ -30,11 +30,11 @@ type DartOptions struct {
 	OutputDir string
 
 	// Package overrides the generated pubspec/barrel-file package name
-	// (default derived from Options.ProtocolName). See dart.Options.Package.
+	// (default latchwire_client). See dart.Options.Package.
 	Package string
 
-	// ClientName overrides the generated class name (default derived from
-	// Options.ProtocolName). See dart.Options.ClientName.
+	// ClientName overrides the generated class name (default
+	// LatchwireClient). See dart.Options.ClientName.
 	ClientName string
 }
 
@@ -46,12 +46,12 @@ type GoOptions struct {
 	// output is plain source files, not a separate module.
 	OutputDir string
 
-	// Package overrides the generated package name (default derived from
-	// Options.ProtocolName). See golang.Options.Package.
+	// Package overrides the generated package name (default
+	// latchwireclient). See golang.Options.Package.
 	Package string
 
-	// ClientName overrides the generated type name (default derived from
-	// Options.ProtocolName). See golang.Options.ClientName.
+	// ClientName overrides the generated type name (default
+	// LatchwireClient). See golang.Options.ClientName.
 	ClientName string
 }
 
@@ -71,7 +71,7 @@ type GenerateOptions struct {
 // each output directory (via a small manifest file) so that a type or
 // method removed from the protocol has its stale generated file removed
 // too, without ever touching files Latchwire didn't generate.
-func (s *Server[C]) Generate(opts GenerateOptions) error {
+func (s *Server[S]) Generate(opts GenerateOptions) error {
 	if err := s.finalize(); err != nil {
 		return err
 	}

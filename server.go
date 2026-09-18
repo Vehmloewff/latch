@@ -9,19 +9,16 @@ package latchwire
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
 	"sync"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/vehmloewff/latchwire/jsonschema"
 	"github.com/vehmloewff/latchwire/names"
 	"github.com/vehmloewff/latchwire/protocol"
 	"github.com/vehmloewff/latchwire/reflectapi"
-	"github.com/vehmloewff/report"
 )
 
 // Default configuration values, used whenever the corresponding Options
@@ -34,10 +31,8 @@ const (
 
 // Options configures a Server.
 type Options struct {
-	// ProtocolName and ProtocolVersion identify this API on the wire. A
-	// connecting client's "connect" frame is checked against them when both
-	// are non-empty.
-	ProtocolName    string
+	// ProtocolVersion is included in generated client URLs as the "version"
+	// query parameter and recorded in manifests.
 	ProtocolVersion string
 
 	// MaxConcurrentRequests bounds how many method handlers may run
@@ -63,15 +58,16 @@ type Options struct {
 	// response shape.
 	ValidateResponses bool
 
-	// Debug, when true, includes report details in internal wire errors. Never
-	// enable this in production: it can leak internal details (stack traces,
-	// database errors, file paths).
+	// Debug, when true, includes the underlying Go error string in
+	// ErrCodeInternal wire errors. Never enable this in production: it can
+	// leak internal details (stack traces, database errors, file paths).
 	Debug bool
 
-	// Tracer receives OpenTelemetry spans and events for connection lifecycle,
-	// protocol violations, transport failures, and handler execution. A nil
-	// Tracer uses the global OpenTelemetry tracer.
-	Tracer trace.Tracer
+	// Logger receives structured lifecycle logs (connection accepted,
+	// connect rejected, protocol violations, handler panics, transport
+	// errors). Connection params are never logged, since they may contain
+	// secrets. A nil Logger disables logging.
+	Logger *slog.Logger
 
 	// OriginPatterns lists allowed WebSocket origins, matched the same way
 	// as github.com/coder/websocket's AcceptOptions.OriginPatterns. Leave
@@ -94,29 +90,14 @@ func (o *Options) withDefaults() Options {
 	if out.MaxMessageBytes <= 0 {
 		out.MaxMessageBytes = DefaultMaxMessageBytes
 	}
-	if out.Tracer == nil {
-		out.Tracer = otel.Tracer(instrumentationName)
-	}
 	return out
 }
 
-// reservedFrameNames may not be used as a method or event name: they would
-// be ambiguous against Latchwire's own wire frame "type" discriminator.
-var reservedFrameNames = map[string]bool{
-	"connect":          true,
-	"connected":        true,
-	"request":          true,
-	"response":         true,
-	"error":            true,
-	"event":            true,
-	"connection_error": true,
-}
-
-// Server is a configured Latchwire API, generic over C, the connect
-// parameter type declared by the application. Construct one with New,
-// register methods and events, optionally set OnConnect, then either serve
-// it (ServeHTTP) or generate clients from it (Generate).
-type Server[C any] struct {
+// Server is a configured Latchwire API. Its one server-to-client event type
+// is inferred from the generic Emitter supplied to OnConnect.
+// Construct one with New, register methods, optionally set OnConnect, then
+// either serve it (ServeHTTP) or generate clients from it (Generate).
+type Server[S any] struct {
 	opts Options
 
 	mu          sync.Mutex
@@ -125,135 +106,204 @@ type Server[C any] struct {
 
 	registry *reflectapi.Registry
 
-	connectType reflect.Type
-	connectRef  protocol.TypeRef
-	connectVal  *jsonschema.Validator
+	eventType reflect.Type
+	eventRef  protocol.TypeRef
+	eventVal  *jsonschema.Validator
 
 	methods     map[string]*methodEntry
 	methodOrder []string
 
-	events     map[string]*eventEntry
-	eventOrder []string
-
-	onConnect func(context.Context, *Conn[C]) report.Err
+	onConnect        func(context.Context, any, *Conn) (any, error)
+	onConnectEmitter emitterRegistration
+	onDisconnect     func(context.Context, any)
 
 	ir *protocol.Protocol
 
 	connsMu sync.Mutex
-	conns   map[*Conn[C]]struct{}
+	conns   map[*Conn]struct{}
+	states  map[*Conn]any
 
 	shuttingDown chan struct{}
 	shutdownOnce sync.Once
 }
 
-// New creates a Server whose connect handshake payload is decoded into and
-// validated against C. C must be a named, exported struct type (the same
-// constraint Latchwire places on every request, response, and event payload
-// type); this is checked at finalization time, the first call to ServeHTTP,
-// Manifest, or Generate.
-func New[C any](opts Options) *Server[C] {
-	var zero C
-	return &Server[C]{
+// New creates a Server generic over S, the per-connection application state.
+// The event payload type is inferred from the concrete Emitter used by
+// OnConnect.
+func New[S any](opts Options) *Server[S] {
+	return &Server[S]{
 		opts:         opts.withDefaults(),
 		registry:     reflectapi.NewRegistry(),
-		connectType:  reflect.TypeOf(zero),
 		methods:      map[string]*methodEntry{},
-		events:       map[string]*eventEntry{},
-		conns:        map[*Conn[C]]struct{}{},
+		conns:        map[*Conn]struct{}{},
+		states:       map[*Conn]any{},
 		shuttingDown: make(chan struct{}),
 	}
 }
 
 // Register declares an RPC method. handler must have exactly the shape:
 //
-//	func(context.Context, *latchwire.Conn[C], Request) (Response, report.Err)
+//	func(context.Context, S, Request) (Response, error)
 //
-// where Request and Response are named, exported struct types and C matches
-// this Server's connect-parameter type. The signature is validated
-// immediately; Register never defers validation to the first request.
-func (s *Server[C]) Register(name string, handler any) error {
+// where Request and Response are named, exported struct types. The signature
+// is validated immediately and panics on invalid configuration; Register
+// never defers validation to the first request.
+func (s *Server[S]) Register(name string, handler any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.finalized {
-		return fmt.Errorf("latchwire: cannot register method %q: server is already finalized", name)
+		panic(fmt.Errorf("latchwire: cannot register method %q: server is already finalized", name))
 	}
 	if name == "" {
-		return fmt.Errorf("latchwire: method name must not be empty")
+		panic(fmt.Errorf("latchwire: method name must not be empty"))
 	}
-	if reservedFrameNames[name] {
-		return fmt.Errorf("latchwire: method name %q is reserved", name)
+	if !names.IsIdentifier(name) {
+		panic(fmt.Errorf("latchwire: method name %q must be a valid identifier", name))
 	}
 	if _, exists := s.methods[name]; exists {
-		return fmt.Errorf("latchwire: method %q is already registered", name)
+		panic(fmt.Errorf("latchwire: method %q is already registered", name))
 	}
 
-	wantConnType := reflect.TypeOf((*Conn[C])(nil))
-	adapter, err := reflectapi.ValidateHandler(handler, wantConnType)
+	wantStateType := reflect.TypeOf((*S)(nil)).Elem()
+	adapter, err := reflectapi.ValidateStateHandler(handler, wantStateType)
 	if err != nil {
-		return fmt.Errorf("latchwire: register method %q: %w", name, err)
+		panic(fmt.Errorf("latchwire: register method %q: %w", name, err))
 	}
 
 	s.methods[name] = &methodEntry{name: name, adapter: adapter}
 	s.methodOrder = append(s.methodOrder, name)
-	return nil
 }
 
-// RegisterEvent declares a server-to-client event, previously created with
-// Event[T]. Its payload type T must be a named, exported struct type.
-func (s *Server[C]) RegisterEvent(e EventRegistration) error {
+// OnConnect registers the connection callback, invoked exactly once per
+// connection after the HTTP upgrade succeeds. The callback may use the
+// connection's copied HTTP request through Conn.Request(). Its event
+// parameter is a concrete Emitter[E]:
+//
+//	func(context.Context, Emitter[E], *Conn) S
+//	func(context.Context, Emitter[E], *Conn) (S, error)
+//
+// Invalid callbacks and duplicate registrations panic immediately. OnConnect
+// itself is optional.
+func (s *Server[S]) OnConnect(fn any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.finalized {
-		return fmt.Errorf("latchwire: cannot register event: server is already finalized")
-	}
-
-	name := e.eventName()
-	if name == "" {
-		return fmt.Errorf("latchwire: event name must not be empty")
-	}
-	if reservedFrameNames[name] {
-		return fmt.Errorf("latchwire: event name %q is reserved", name)
-	}
-	if _, exists := s.events[name]; exists {
-		return fmt.Errorf("latchwire: event %q is already registered", name)
-	}
-
-	t := e.payloadGoType()
-	if t.Kind() != reflect.Struct || t.Name() == "" {
-		return fmt.Errorf("latchwire: event %q payload must be a named struct type, got %s", name, t)
-	}
-
-	s.events[name] = &eventEntry{name: name, payloadType: t}
-	s.eventOrder = append(s.eventOrder, name)
-	return nil
-}
-
-// OnConnect registers the connection-setup callback, invoked exactly once
-// per connection after its connect payload has passed schema validation and
-// decoding but before the "connected" frame is sent. Registering a second
-// OnConnect handler returns an error. OnConnect itself is optional: a
-// server with no OnConnect accepts every schema-valid connection.
-func (s *Server[C]) OnConnect(fn func(context.Context, *Conn[C]) report.Err) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.finalized {
-		return fmt.Errorf("latchwire: cannot register OnConnect: server is already finalized")
+		panic(fmt.Errorf("latchwire: cannot register OnConnect: server is already finalized"))
 	}
 	if s.onConnect != nil {
-		return fmt.Errorf("latchwire: OnConnect has already been registered")
+		panic(fmt.Errorf("latchwire: OnConnect has already been registered"))
 	}
-	s.onConnect = fn
-	return nil
+	adapted, eventType, emitter, err := adaptOnConnect[S](fn)
+	if err != nil {
+		panic(err)
+	}
+	s.onConnect = adapted
+	s.eventType = eventType
+	s.onConnectEmitter = emitter
+}
+
+// OnDisconnect registers a callback invoked once after a connection closes.
+// Invalid callbacks and duplicate registrations panic immediately.
+// The callback receives the State returned by OnConnect:
+//
+//	func(context.Context, S)
+//	func(context.Context, S) error
+func (s *Server[S]) OnDisconnect(fn any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finalized {
+		panic(fmt.Errorf("latchwire: cannot register OnDisconnect: server is already finalized"))
+	}
+	if s.onDisconnect != nil {
+		panic(fmt.Errorf("latchwire: OnDisconnect has already been registered"))
+	}
+	adapted, err := adaptOnDisconnect[S](fn)
+	if err != nil {
+		panic(err)
+	}
+	s.onDisconnect = adapted
+}
+
+func adaptOnDisconnect[S any](fn any) (func(context.Context, any), error) {
+	if fn == nil {
+		return nil, fmt.Errorf("latchwire: OnDisconnect handler must not be nil")
+	}
+	v := reflect.ValueOf(fn)
+	t := v.Type()
+	stateType := reflect.TypeOf((*S)(nil)).Elem()
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	if t.Kind() != reflect.Func || t.IsVariadic() ||
+		(t.NumIn() != 1 && t.NumIn() != 2) ||
+		(t.NumIn() == 2 && t.In(0) != ctxType) ||
+		t.In(t.NumIn()-1) != stateType ||
+		(t.NumOut() != 0 && (t.NumOut() != 1 || t.Out(0) != errorType)) {
+		return nil, fmt.Errorf("latchwire: OnDisconnect handler must accept State, optionally preceded by context.Context")
+	}
+	return func(ctx context.Context, state any) {
+		stateVal := reflect.ValueOf(state)
+		if !stateVal.IsValid() {
+			stateVal = reflect.Zero(stateType)
+		}
+		args := []reflect.Value{stateVal}
+		if t.NumIn() == 2 {
+			args = []reflect.Value{reflect.ValueOf(ctx), stateVal}
+		}
+		outs := v.Call(args)
+		if len(outs) == 1 && !outs[0].IsNil() {
+			// Disconnect callbacks cannot report an error to the peer; the
+			// callback is still isolated from connection cleanup.
+		}
+	}, nil
+}
+
+func adaptOnConnect[S any](fn any) (func(context.Context, any, *Conn) (any, error), reflect.Type, emitterRegistration, error) {
+	if fn == nil {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must not be nil")
+	}
+	v := reflect.ValueOf(fn)
+	t := v.Type()
+	stateType := reflect.TypeOf((*S)(nil)).Elem()
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	if t.Kind() != reflect.Func || t.IsVariadic() ||
+		(t.NumOut() != 1 && t.NumOut() != 2) ||
+		t.Out(0) != stateType ||
+		(t.NumOut() == 2 && t.Out(1) != errorType) {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must return S or (S, error)")
+	}
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	connType := reflect.TypeOf((*Conn)(nil))
+	if t.NumIn() != 3 {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must accept context.Context, Emitter[E], and *Conn")
+	}
+	if t.In(0) != ctxType {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's first argument must be context.Context")
+	}
+	if t.In(2) != connType {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's third argument must be *Conn")
+	}
+	prototype, ok := reflect.New(t.In(1)).Elem().Interface().(emitterRegistration)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's second argument must be Emitter[E]")
+	}
+	return func(ctx context.Context, emitter any, conn *Conn) (any, error) {
+		outs := v.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(emitter), reflect.ValueOf(conn)})
+		var err error
+		if len(outs) == 2 && !outs[1].IsNil() {
+			err = outs[1].Interface().(error)
+		}
+		return outs[0].Interface(), err
+	}, prototype.emitterType(), prototype, nil
 }
 
 // finalize resolves every registered type via reflection into the protocol
 // IR, checks for naming collisions, and compiles every JSON Schema
 // validator exactly once. It runs at most once; subsequent calls return the
 // same result. Registration methods reject calls made after finalization.
-func (s *Server[C]) finalize() error {
+func (s *Server[S]) finalize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -265,19 +315,19 @@ func (s *Server[C]) finalize() error {
 	return s.finalizeErr
 }
 
-func (s *Server[C]) finalizeLocked() error {
-	if s.connectType == nil {
-		return fmt.Errorf("latchwire: connect parameter type must be a concrete struct type")
+func (s *Server[S]) finalizeLocked() error {
+	if s.eventType == nil {
+		return fmt.Errorf("latchwire: event type must be a concrete struct type")
 	}
 
-	connectRef, err := s.registry.Resolve(s.connectType)
+	eventRef, err := s.registry.Resolve(s.eventType)
 	if err != nil {
-		return fmt.Errorf("latchwire: connect params: %w", err)
+		return fmt.Errorf("latchwire: event type: %w", err)
 	}
-	if connectRef.Kind != protocol.KindStruct {
-		return fmt.Errorf("latchwire: connect params type %s must be a struct", s.connectType)
+	if eventRef.Kind != protocol.KindStruct {
+		return fmt.Errorf("latchwire: event type %s must be a struct", s.eventType)
 	}
-	s.connectRef = connectRef
+	s.eventRef = eventRef
 
 	sortedMethods := append([]string(nil), s.methodOrder...)
 	sort.Strings(sortedMethods)
@@ -299,42 +349,22 @@ func (s *Server[C]) finalizeLocked() error {
 		methods = append(methods, protocol.Method{Name: name, RequestType: reqRef, ResponseType: respRef})
 	}
 
-	sortedEvents := append([]string(nil), s.eventOrder...)
-	sort.Strings(sortedEvents)
-
-	var events []protocol.Event
-	for _, name := range sortedEvents {
-		e := s.events[name]
-		payloadRef, err := s.registry.Resolve(e.payloadType)
-		if err != nil {
-			return fmt.Errorf("latchwire: event %q payload type: %w", name, err)
-		}
-		e.payloadRef = payloadRef
-		events = append(events, protocol.Event{Name: name, PayloadType: payloadRef})
-	}
-
 	s.ir = &protocol.Protocol{
-		Name:        s.opts.ProtocolName,
-		Version:     s.opts.ProtocolVersion,
-		ConnectType: connectRef,
-		Methods:     methods,
-		Events:      events,
-		Types:       s.registry.Types(),
+		Version:   s.opts.ProtocolVersion,
+		Methods:   methods,
+		EventType: eventRef,
+		Types:     s.registry.Types(),
 	}
 
 	if _, err := names.AssignTypeNames(s.ir.Types); err != nil {
 		return err
 	}
-	if _, err := names.BuildMethodTree(sortedMethods); err != nil {
-		return err
-	}
-
-	connectDoc := jsonschema.BuildDocument(s.ir, connectRef)
-	connectVal, err := jsonschema.Compile("latchwire://connect", connectDoc)
+	eventDoc := jsonschema.BuildDocument(s.ir, eventRef)
+	eventVal, err := jsonschema.Compile("latchwire://event", eventDoc)
 	if err != nil {
-		return fmt.Errorf("latchwire: compile connect schema: %w", err)
+		return fmt.Errorf("latchwire: compile event schema: %w", err)
 	}
-	s.connectVal = connectVal
+	s.eventVal = eventVal
 
 	for _, name := range sortedMethods {
 		m := s.methods[name]
@@ -356,55 +386,57 @@ func (s *Server[C]) finalizeLocked() error {
 		}
 	}
 
-	if s.opts.ValidateResponses {
-		for _, name := range sortedEvents {
-			e := s.events[name]
-			doc := jsonschema.BuildDocument(s.ir, e.payloadRef)
-			v, err := jsonschema.Compile("latchwire://event/"+name, doc)
-			if err != nil {
-				return fmt.Errorf("latchwire: compile event %q schema: %w", name, err)
-			}
-			e.validator = v
-		}
-	}
-
 	return nil
 }
 
-// eventValidator returns the compiled validator for a registered event, or
-// nil when ValidateResponses is disabled or the event is unknown.
-func (s *Server[C]) eventValidator(name string) *jsonschema.Validator {
+// eventValidator returns the compiled validator for the one event payload.
+func (s *Server[S]) eventValidator() *jsonschema.Validator {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.events[name]
-	if !ok {
-		return nil
-	}
-	return e.validator
+	return s.eventVal
 }
 
-func (s *Server[C]) track(c *Conn[C]) {
+func (s *Server[S]) options() Options {
+	return s.opts
+}
+
+func (s *Server[S]) track(c *Conn) {
 	s.connsMu.Lock()
 	defer s.connsMu.Unlock()
 	s.conns[c] = struct{}{}
 }
 
-func (s *Server[C]) untrack(c *Conn[C]) {
+func (s *Server[S]) untrack(c *Conn) {
 	s.connsMu.Lock()
-	defer s.connsMu.Unlock()
 	delete(s.conns, c)
+	state, hasState := s.states[c]
+	delete(s.states, c)
+	s.connsMu.Unlock()
+
+	if hasState && s.onDisconnect != nil {
+		s.callOnDisconnect(c.Context(), state)
+	}
+}
+
+func (s *Server[S]) callOnDisconnect(ctx context.Context, state any) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf(ctx, slog.LevelError, "latchwire: OnDisconnect panicked", "panic", r)
+		}
+	}()
+	s.onDisconnect(ctx, state)
 }
 
 // Close performs a graceful shutdown: it stops accepting new connections,
 // closes every active connection, runs their OnClose callbacks, and waits
 // for all of that to finish or for ctx to be done, whichever comes first.
-func (s *Server[C]) Close(ctx context.Context) error {
+func (s *Server[S]) Close(ctx context.Context) error {
 	s.shutdownOnce.Do(func() {
 		close(s.shuttingDown)
 	})
 
 	s.connsMu.Lock()
-	conns := make([]*Conn[C], 0, len(s.conns))
+	conns := make([]*Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
@@ -415,7 +447,7 @@ func (s *Server[C]) Close(ctx context.Context) error {
 		var wg sync.WaitGroup
 		for _, c := range conns {
 			wg.Add(1)
-			go func(c *Conn[C]) {
+			go func(c *Conn) {
 				defer wg.Done()
 				_ = c.Close(CloseGoingAway, "server shutting down")
 			}(c)

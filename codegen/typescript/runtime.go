@@ -1,7 +1,7 @@
 package typescript
 
 // runtimeBody is the language runtime shared by every generated TypeScript
-// client: WebSocket transport, the connect handshake, request-ID
+// client: WebSocket transport, connection setup, request-ID
 // correlation, and event dispatch. It never depends on any particular
 // protocol, so it is emitted verbatim rather than templated.
 const runtimeBody = `export type WebSocketFactory = (url: string) => WebSocketLike;
@@ -41,7 +41,6 @@ interface WireEnvelope {
   version?: string;
   id?: string;
   method?: string;
-  event?: string;
   payload?: unknown;
   error?: string;
 }
@@ -96,9 +95,7 @@ export abstract class BaseConnection {
     this.ws.onerror = () => {
       /* surfaced to callers via rejected/failed pending requests */
     };
-    // The server may have sent events immediately after "connected" (e.g.
-    // from OnConnect); those can arrive in the same underlying read as the
-    // handshake response, before this constructor ever runs. Replay them
+    // Events from OnConnect can arrive before this constructor runs. Replay them
     // in order, deferred with setTimeout (a macrotask) rather than
     // queueMicrotask: the caller's own code right after awaiting connect()
     // - most importantly a synchronous events.x.subscribe(...) call - runs
@@ -205,41 +202,32 @@ function defaultWebSocketFactory(url: string): WebSocketLike {
   return new g.WebSocket(url);
 }
 
-/** The live socket plus any frames that arrived after "connected" but
- * before the caller (BaseConnection's constructor) could install its own
- * message handler — e.g. an event sent from OnConnect can share the same
- * underlying read as the handshake response. BaseConnection replays these,
- * in order, so no frame is ever silently dropped by the handshake race. */
+/** The live socket plus any frames that arrived before BaseConnection could
+ * install its message handler. */
 export interface HandshakeResult {
   ws: WebSocketLike;
   bufferedMessages: string[];
 }
 
-/** Performs the WebSocket connect + Latchwire handshake, resolving only
- * after the server's "connected" frame arrives (or rejecting with the
- * connection's connection_error). Used by every generated Client.connect(). */
+/** Opens the WebSocket and resolves once it is open. Latchwire has no client
+ * handshake; the server runs OnConnect for the HTTP upgrade request. */
 export function connectSocket(
   url: string,
   factory: WebSocketFactory | undefined,
-  protocolName: string,
-  protocolVersion: string,
-  payload: unknown
+  version: string
 ): Promise<HandshakeResult> {
-  const ws = (factory ?? defaultWebSocketFactory)(url);
+  const target = new URL(url);
+  target.searchParams.set("version", version);
+  const ws = (factory ?? defaultWebSocketFactory)(target.toString());
   const bufferedMessages: string[] = [];
 
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
 
     ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: "connect",
-          protocol: protocolName,
-          version: protocolVersion,
-          payload,
-        })
-      );
+      settled = true;
+      ws.onopen = null;
+      resolve({ ws, bufferedMessages });
     };
 
     ws.onerror = () => {
@@ -251,14 +239,14 @@ export function connectSocket(
     ws.onclose = () => {
       if (settled) return;
       settled = true;
-      reject(new Error("Latchwire: connection closed before the handshake completed"));
+      reject(new Error("Latchwire: connection closed before setup completed"));
     };
 
     ws.onmessage = (ev) => {
       if (settled) {
-        // The handshake already resolved, but BaseConnection hasn't
+        // The socket is open, but BaseConnection hasn't
         // installed its own handler yet (same synchronous read as
-        // "connected", or a still-pending microtask). Buffer for replay.
+        // installed its handler (or is in a pending microtask). Buffer for replay.
         bufferedMessages.push(ev.data);
         return;
       }
@@ -268,20 +256,12 @@ export function connectSocket(
         env = JSON.parse(ev.data);
       } catch {
         settled = true;
-        ws.close(1002, "malformed handshake response");
-        reject(new Error("Latchwire: malformed response during connect"));
+        ws.close(1002, "malformed event before setup");
+        reject(new Error("Latchwire: malformed response during setup"));
         return;
       }
 
-      if (env.type === "connected") {
-        settled = true;
-        ws.onopen = null;
-        ws.onerror = null;
-        ws.onclose = null;
-        // Leave onmessage installed (see the settled branch above) until
-        // BaseConnection takes over.
-        resolve({ ws, bufferedMessages });
-      } else if (env.type === "connection_error") {
+      if (env.type === "connection_error") {
         settled = true;
         ws.close();
         reject(new LatchwireError(env.error ?? "connection rejected"));

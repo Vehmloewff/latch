@@ -8,6 +8,8 @@ import "encoding/json"
 type FrameType string
 
 const (
+	// FrameConnect and FrameConnected are retained for decoding older
+	// protocol traffic. Current clients do not send or expect either frame.
 	FrameConnect         FrameType = "connect"
 	FrameConnected       FrameType = "connected"
 	FrameRequest         FrameType = "request"
@@ -22,18 +24,17 @@ const (
 type Envelope struct {
 	Type FrameType `json:"type"`
 
-	// connect / connected
-	Protocol string `json:"protocol,omitempty"`
-	Version  string `json:"version,omitempty"`
-
+	// Version is retained for protocol metadata in server-generated frames.
+	Version string `json:"version,omitempty"`
 	// request / response / error
 	ID     string `json:"id,omitempty"`
 	Method string `json:"method,omitempty"`
 
-	// event
+	// Event is ignored by current runtimes. It is retained so older clients
+	// can decode envelopes while migrating to the single event stream.
 	Event string `json:"event,omitempty"`
 
-	// request payload, response payload, connect payload, or event payload
+	// request, response, or event payload
 	Payload json.RawMessage `json:"payload,omitempty"`
 
 	// error / connection_error. Errors intentionally carry only a safe,

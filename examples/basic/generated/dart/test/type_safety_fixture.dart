@@ -8,24 +8,21 @@
 // here would stop finding an error and the test would fail.
 import 'package:basic_client/basic_client.dart';
 
-Future<void> shouldFailToAnalyze(BasicClient client) async {
-  final conn = await client.connect(ConnectParams(token: 'secret'));
+Future<void> shouldFailToAnalyze(LatchwireClient client) async {
+  final conn = await client.connect();
 
   // Wrong argument type: room must be String, not int.
-  await conn.room.subscribe(SubscribeRequest(room: 1));
+  await conn.roomSubscribe(SubscribeRequest(room: 1));
 
   // SubscribeResponse has no "nonexistent" field.
-  final result = await conn.room.subscribe(SubscribeRequest(room: 'general'));
+  final result = await conn.roomSubscribe(SubscribeRequest(room: 'general'));
   print(result.nonexistent);
 
   // MessageReceived has no "nonexistent" field.
-  conn.events.messageReceived.listen((event) {
+  conn.events.listen((event) {
     print(event.nonexistent);
   });
 
-  // ConnectParams requires "token".
-  await client.connect(ConnectParams());
-
-  // No such top-level namespace.
-  await conn.doesNotExist.get();
+  // No such top-level method.
+  await conn.doesNotExist();
 }

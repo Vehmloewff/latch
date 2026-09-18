@@ -16,8 +16,8 @@ const draft202012 = "https://json-schema.org/draft/2020-12/schema"
 // BuildDocument produces a complete, self-contained JSON Schema document for
 // root, including a "$defs" section for every named type it (transitively)
 // references. root must resolve to a named struct or enum type — Latchwire
-// requires connect params, method requests/responses, and event payloads to
-// all be named struct types.
+// requires method requests/responses and the event payload to all be named
+// struct types.
 func BuildDocument(p *protocol.Protocol, root protocol.TypeRef) map[string]any {
 	defs := map[string]any{}
 	seen := map[string]bool{}

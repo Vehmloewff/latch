@@ -4,6 +4,23 @@ This document records the explicit decisions the spec asked to be made and
 documented rather than left ambiguous (see "Questions to resolve during
 implementation"). It is updated as each phase lands.
 
+## 0. Current connection and event model
+
+The server is generic over its per-connection application state `S`; the
+connection remains non-generic. The one server-to-client event payload is
+carried by a generic `Emitter[E]` argument to `OnConnect`.
+Applications that have several event variants model them as one tagged `E`
+value and send it with `emitter.Send(value)`. There are no named event
+registrations and no event-name dispatch field on the wire.
+
+The WebSocket upgrade is the connection handshake. The client sends no
+initial setup frame. `OnConnect` runs once after the upgrade and receives a
+connection whose `Request()` method returns a copy of the HTTP upgrade
+request. `OnConnect` returns `S`, which is passed to every method and to
+`OnDisconnect`; state is stored by the server, not on `Conn`. RPC methods are
+registered by identifier only; dotted names are rejected so every generated
+client can expose methods directly.
+
 ## 1. Go integer -> TypeScript mapping
 
 `int`, `int8`, `int16`, `int32`, `uint`, `uint8`, `uint16`, `uint32`,
@@ -69,27 +86,30 @@ semantics silently.
 ## 4. Outbound queue overflow
 
 `Options.OutboundQueueSize` bounds a per-connection channel. On overflow,
-`EventDef.Send` (and every other outbound frame) returns an error **and**
+`Conn.Send` (and every other outbound frame) returns an error **and**
 the connection is closed (`ClosePolicyViolation`). Latchwire never silently
 drops a typed frame to relieve backpressure.
 
-## 5. Report errors
+## 5. Error code naming convention
 
-Error and `connection_error` frames carry a single safe message string. They
-never expose protocol-specific codes or application error structs.
+Wire error codes are `snake_case` strings. Latchwire reserves:
 
-Go handlers and `OnConnect` callbacks return `report.Err`. Wrap reports with
-operation context and attach relevant diagnostic data with `Dump`; use
-`Internal` for implementation details that must not reach the client. Latchwire
-uses `UserMessage` for the wire string and records the full report in the
-OpenTelemetry span.
+- `method_not_found`
+- `invalid_request`
+- `internal_error`
+- `protocol_violation`
+- `connect_rejected`
+- `duplicate_request_id`
+
+Applications are free to use any other code string via `latchwire.NewError`.
 
 ## 6. OnConnect is optional
 
-A `Server[C]` may have zero or one `OnConnect` handler. With none, every
-connect payload that passes JSON Schema validation is accepted
-unconditionally. Registering a second `OnConnect` is a registration-time
-error.
+A `Server[S]` may have zero or one `OnConnect` handler. With one, it runs
+after the HTTP upgrade, can inspect `conn.Request()`, send typed `E` events,
+and returns the per-connection `S` value. That state is passed to every method
+and to the optional `OnDisconnect` callback. Registering a second lifecycle
+callback of either kind is a registration-time error.
 
 ## 7. Origin checking default
 
@@ -121,26 +141,25 @@ handler. This keeps a slow or throwing listener from ever blocking the
 socket's read loop, and keeps listener execution order the same relative to
 other promise-based work in the app.
 
-There is one deliberate exception, and it was found by the end-to-end
-integration test rather than anticipated up front: events sent from
-`OnConnect` on the Go server are buffered server-side and flushed
-immediately after `"connected"`, which means they can arrive in the very
-same underlying WebSocket read as the handshake response — before
+Events sent from `OnConnect` can arrive before the generated client's
+constructor has finished, because there is no client handshake response. The
+runtime therefore buffers frames received before the application subscribes:
+before
 `BaseConnection`'s constructor (and therefore the generated subclass's own
 `readonly events = {...}` field initializers) has even run. The runtime
 detects this case (`HandshakeResult.bufferedMessages`) and replays those
-frames after construction, but the replay is scheduled with `setTimeout(fn,
+frames after construction, and the replay is scheduled with `setTimeout(fn,
 0)` — a macrotask — rather than `queueMicrotask`. A microtask would still
 run *before* the application's own code immediately following `await
-client.connect(...)` (e.g. a synchronous `conn.events.x.subscribe(...)`
+client.connect(...)` (e.g. a synchronous `conn.events.subscribe(...)`
 call), because that code is itself just another microtask continuation of
 the same `await` and both were queued from within the same synchronous
 call stack. Only a macrotask reliably runs after the caller has had a
 chance to subscribe. Dart and the Go client will need the equivalent
 ordering guarantee once they exist (see the note added to their sections
 below when implemented) — this is a wire-protocol-shaped hazard
-(the server explicitly documents that "connected" always precedes buffered
-events), not a TypeScript-only concern.
+(the server starts OnConnect immediately after the upgrade), not a
+TypeScript-only concern.
 
 ## 10. Dart optional vs nullable
 
@@ -193,70 +212,33 @@ environment). Latchwire's generated `pubspec.yaml` depends on
 cross-platform WebSocket package used by the wider Dart/Flutter ecosystem)
 rather than reimplementing per-platform transport. `WebSocketChannel.stream`
 is single-subscription (unlike a browser WebSocket's freely-reassignable
-`onmessage`), so the handshake in `connectSocket` keeps its one
-`StreamSubscription` alive across the handshake/live-connection boundary and
-hands it to `BaseConnection`, which takes over by replacing the
+`onmessage`), so `connectSocket` creates the one
+`StreamSubscription` for the connection and hands it to `BaseConnection`,
+which takes over by replacing the
 subscription's callbacks (`onData`/`onDone`/`onError`) instead of calling
 `.listen()` a second time — which throws at runtime ("Stream has already
 been listened to"). This was caught by the generated Dart client's own
 integration test, not anticipated up front.
 
-## 13. Connect-time event flood vs. the outbound queue
+## 13. Connection-time event flood vs. the outbound queue
 
-`OnConnect` may spawn a goroutine that calls `EventDef.Send` before
-`OnConnect` itself returns (the documented buffering behavior — see §5 of
-the spec, "Event sends during OnConnect"). That goroutine and the
-handshake's own `flushAfterConnect` both serialize through `Conn.sendMu`,
-but which one observes `connectedSent == true` first is a genuine race:
-either the flood keeps buffering into `pendingEvents` (unbounded, since
-buffering never fails) until `flushAfterConnect` runs and then overflows
-the bounded outbound queue *while replaying the buffer*, or
-`flushAfterConnect` wins first and the flood overflows the queue directly
-afterward. Both are correct outcomes — the outbound-queue-overflow policy
-(§7 of the spec: close rather than silently drop) is upheld either way —
-but they differ in whether the client ever receives the `"connected"`
-frame before the connection terminates. A test that floods sends from
-`OnConnect` with a tiny `OutboundQueueSize` (as
-`TestOutboundQueueOverflowClosesConnection` does, deliberately, to force
-overflow quickly) must therefore only assert the guarantee that holds
-regardless of which side of the race wins: the connection terminates
-rather than hanging or dropping frames silently forever. It must not assume
-`"connected"` is always readable first, because under this specific
-adversarial pattern it sometimes legitimately isn't.
+`OnConnect` can send typed events immediately. Those sends use the same
+bounded outbound queue as later sends; on overflow `Conn.Send` returns an
+error and closes the connection rather than silently dropping a frame.
 
 ## 14. Go client: channels, not callbacks, for events
 
-Per spec section 58 Q7, generated Go events use channels
-(`conn.Events.MessageReceived()` returns a `<-chan MessageReceived`), matching
-the spec's own illustrative example (`for message := range
-conn.Events.MessageReceived() {...}`) and idiomatic Go. Each event's channel
-is buffered (capacity 64) and delivery is best-effort: if the consumer
-isn't keeping up, once the buffer is full, further events for that stream
-are silently dropped rather than blocking the connection's one read
-goroutine — the same "events are best-effort" policy already documented for
-the server and the other two languages. Channels are closed when the
-connection closes, so a `for range` loop terminates cleanly rather than
-blocking forever. This avoids spawning one extra goroutine per event
-stream, matching the spec's "avoid one goroutine per event unless
-necessary."
+Per spec section 58 Q7, generated Go events use one channel
+(`conn.Events()` returns a `<-chan Event`). The channel is buffered and
+delivery is best-effort: once it is full, further events are dropped rather
+than blocking the connection's read goroutine. It closes when the connection
+closes.
 
 ## 15. Go client: no handshake replay-buffer needed
 
-TypeScript and Dart both need a "replay buffered messages" mechanism (see
-§9, §12) because their transports deliver frames via callbacks/streams that
-are already active — the same underlying batch of bytes can contain both
-the handshake response and a subsequent event, delivered before the
-caller's own code can install a permanent handler. Go's client avoids this
-entirely by construction: `client.Connect` performs the handshake with a
-single synchronous `ws.Read` loop and returns *before* starting any
-background reader. Generated code registers every event handler (via
-`client.RegisterEvent`) and only then calls `conn.Start()`, which is what
-launches the goroutine that calls `ws.Read` again. Any frame the server
-sent immediately after `"connected"` simply hasn't been read off the
-socket yet at that point — there is nothing to buffer or replay, because
-nothing has raced ahead of anything else. This is a direct consequence of
-Go's pull-based, one-frame-per-`Read()`-call transport API, as opposed to
-JavaScript/Dart's push-based callback/stream model.
+Go's client dials without sending a setup frame and starts its reader only
+after generated code registers the one event channel. This prevents an event
+sent from `OnConnect` from racing the generated registration.
 
 ## 16. Dart: zero-field structs need a plain constructor
 

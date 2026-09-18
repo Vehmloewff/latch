@@ -18,13 +18,11 @@ import (
 // Options configures Dart generation.
 type Options struct {
 	// Package is the pubspec package name and the name of the public
-	// barrel file (lib/<Package>.dart). Defaults to snake_case(protocol
-	// name) + "_client", or "latchwire_client" if the protocol has no name.
+	// barrel file (lib/<Package>.dart). Defaults to "latchwire_client".
 	Package string
 
 	// ClientName is the base name for the generated classes: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to PascalCase(protocol name) +
-	// "Client", or "LatchwireClient" if the protocol has no name.
+	// and "Connected<Name>Client". Defaults to "LatchwireClient".
 	ClientName string
 
 	// WebSocketChannelVersion pins the package:web_socket_channel version
@@ -32,21 +30,13 @@ type Options struct {
 	WebSocketChannelVersion string
 }
 
-func (o Options) resolve(p *protocol.Protocol) Options {
+func (o Options) resolve(_ *protocol.Protocol) Options {
 	out := o
 	if out.Package == "" {
-		if p.Name != "" {
-			out.Package = names.SnakeCase(p.Name) + "_client"
-		} else {
-			out.Package = "latchwire_client"
-		}
+		out.Package = "latchwire_client"
 	}
 	if out.ClientName == "" {
-		if p.Name != "" {
-			out.ClientName = names.PascalCase(p.Name) + "Client"
-		} else {
-			out.ClientName = "LatchwireClient"
-		}
+		out.ClientName = "LatchwireClient"
 	}
 	if out.WebSocketChannelVersion == "" {
 		out.WebSocketChannelVersion = "^3.0.0"
@@ -58,6 +48,9 @@ func (o Options) resolve(p *protocol.Protocol) Options {
 // relative file path (from the package root) to file contents. It is
 // deterministic: the same protocol always produces byte-identical output.
 func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
+	if err := names.ValidateIdentifiers(methodNames(p)); err != nil {
+		return nil, fmt.Errorf("dart: %w", err)
+	}
 	opts = opts.resolve(p)
 
 	typeNames, err := names.AssignTypeNames(p.Types)
@@ -65,7 +58,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("dart: %w", err)
 	}
 
-	header := codegen.HeaderComment(p.Name, p.Version)
+	header := codegen.HeaderComment(p.Version)
 
 	clientBody, err := generateClientFile(p, opts.ClientName, typeNames)
 	if err != nil {
@@ -101,9 +94,9 @@ dev_dependencies:
 
 func generateBarrelFile(clientName string) string {
 	return fmt.Sprintf(
-		"export 'src/client.dart' show %s, Connected%s, %sEvents;\n"+
+		"export 'src/client.dart' show %s, Connected%s;\n"+
 			"export 'src/models.dart';\n"+
 			"export 'src/runtime.dart' show ClientOptions, LatchwireError, LatchwireDecodeException;\n",
-		clientName, clientName, clientName,
+		clientName, clientName,
 	)
 }

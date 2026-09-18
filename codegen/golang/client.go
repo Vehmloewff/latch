@@ -2,7 +2,6 @@ package golang
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/vehmloewff/latchwire/names"
@@ -23,6 +22,14 @@ func methodNames(p *protocol.Protocol) []string {
 		out[i] = m.Name
 	}
 	return out
+}
+
+func eventType(p *protocol.Protocol) (protocol.TypeRef, error) {
+	ref, ok := p.EventRef()
+	if !ok {
+		return protocol.TypeRef{}, fmt.Errorf("protocol has no event type")
+	}
+	return ref, nil
 }
 
 // eventGetterNames maps every event's full dotted name to its PascalCase
@@ -147,96 +154,50 @@ func buildNamespaceInitChild(clientName, fieldExpr string, node *names.MethodNod
 	return b.String()
 }
 
-// generateClientFile renders client.go: the top-level "<Name>Client" (with
-// a typed Connect) and "Connected<Name>Client" (the typed RPC/event
-// surface) types, plus one namespace struct per non-leaf method path
-// segment and an events struct.
+// generateClientFile renders client.go with direct RPC methods and one typed
+// server-event stream on the connected client.
 func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typeNames map[string]string) (string, error) {
-	methodTree, err := names.BuildMethodTree(methodNames(p))
-	if err != nil {
-		return "", err
-	}
-	eventGetters, err := eventGetterNames(p)
+	eventRef, err := eventType(p)
 	if err != nil {
 		return "", err
 	}
 
 	methods := methodIndex(p)
 	connectedName := "Connected" + clientName
-	connectType := goType(p.ConnectType, typeNames)
-	eventsType := connectedName + "Events"
-
-	var namespaceTypes []string
-	collectNamespaceTypes(clientName, methodTree, nil, methods, typeNames, &namespaceTypes)
-	sort.Strings(namespaceTypes)
+	eventGoType := goType(eventRef, typeNames)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", pkg)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/vehmloewff/latchwire/client\"\n)\n\n")
 
-	fmt.Fprintf(&b, "// %s is a Latchwire client for the %q protocol. Construct one with New,\n", clientName, p.Name)
+	fmt.Fprintf(&b, "// %s is a Latchwire client. Construct one with New,\n", clientName)
 	fmt.Fprintf(&b, "// then call Connect to obtain a %s.\n", connectedName)
 	fmt.Fprintf(&b, "type %s struct {\n\turl string\n}\n\n", clientName)
 	fmt.Fprintf(&b, "// New creates a %s targeting the given WebSocket URL.\n", clientName)
 	fmt.Fprintf(&b, "func New(url string) *%s {\n\treturn &%s{url: url}\n}\n\n", clientName, clientName)
 
-	fmt.Fprintf(&b, "// Connect performs the Latchwire handshake and returns a live %s.\n", connectedName)
-	fmt.Fprintf(&b, "func (c *%s) Connect(ctx context.Context, params %s) (*%s, error) {\n", clientName, connectType, connectedName)
-	fmt.Fprintf(&b, "\tconn, err := client.Connect(ctx, c.url, %q, %q, params)\n", p.Name, p.Version)
+	fmt.Fprintf(&b, "// Connect opens a live %s.\n", connectedName)
+	fmt.Fprintf(&b, "func (c *%s) Connect(ctx context.Context) (*%s, error) {\n", clientName, connectedName)
+	fmt.Fprintf(&b, "\tconn, err := client.Connect(ctx, c.url, %q)\n", p.Version)
 	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
-	fmt.Fprintf(&b, "\tresult := &%s{conn: conn}\n", connectedName)
-	b.WriteString(buildNamespaceInit(clientName, "result", methodTree, nil))
-	fmt.Fprintf(&b, "\tresult.Events = &%s{\n", eventsType)
-	for _, e := range p.Events {
-		payloadType := goType(e.PayloadType, typeNames)
-		fmt.Fprintf(&b, "\t\t%s: client.RegisterEvent[%s](conn, %q),\n", unexported(eventGetters[e.Name]), payloadType, e.Name)
-	}
-	b.WriteString("\t}\n")
+	fmt.Fprintf(&b, "\tresult := &%s{conn: conn, events: client.RegisterEvent[%s](conn)}\n", connectedName, eventGoType)
 	b.WriteString("\tconn.Start()\n")
 	b.WriteString("\treturn result, nil\n}\n\n")
 
 	fmt.Fprintf(&b, "// %s is a live, connected %s client.\n", connectedName, clientName)
-	fmt.Fprintf(&b, "type %s struct {\n\tconn *client.Conn\n\n", connectedName)
-	for _, seg := range methodTree.ChildOrder {
-		child := methodTree.Children[seg]
-		if !child.IsLeaf {
-			fmt.Fprintf(&b, "\t%s *%s\n", names.PascalCase(seg), namespaceTypeName(clientName, []string{seg}))
-		}
-	}
-	fmt.Fprintf(&b, "\tEvents *%s\n", eventsType)
+	fmt.Fprintf(&b, "type %s struct {\n\tconn *client.Conn\n\tevents <-chan %s\n", connectedName, eventGoType)
 	b.WriteString("}\n\n")
 
-	for _, seg := range methodTree.ChildOrder {
-		child := methodTree.Children[seg]
-		if child.IsLeaf {
-			m := methods[child.FullName]
-			b.WriteString(renderMethodFunc(connectedName, "c", child.FullName, m, typeNames))
-		}
+	for _, m := range p.Methods {
+		b.WriteString(renderMethodFunc(connectedName, "c", m.Name, methods[m.Name], typeNames))
 	}
+	fmt.Fprintf(&b, "// Events returns the single server-to-client event stream.\n")
+	fmt.Fprintf(&b, "func (c *%s) Events() <-chan %s {\n\treturn c.events\n}\n\n", connectedName, eventGoType)
 
 	fmt.Fprintf(&b, "// Close closes the connection.\n")
 	fmt.Fprintf(&b, "func (c *%s) Close() error {\n\treturn c.conn.Close()\n}\n\n", connectedName)
 	fmt.Fprintf(&b, "// Closed returns a channel that is closed once the connection has closed.\n")
 	fmt.Fprintf(&b, "func (c *%s) Closed() <-chan struct{} {\n\treturn c.conn.Closed()\n}\n\n", connectedName)
-
-	fmt.Fprintf(&b, "// %s exposes every server-to-client event as a typed, receive-only channel.\n", eventsType)
-	fmt.Fprintf(&b, "type %s struct {\n", eventsType)
-	for _, e := range p.Events {
-		payloadType := goType(e.PayloadType, typeNames)
-		fmt.Fprintf(&b, "\t%s <-chan %s\n", unexported(eventGetters[e.Name]), payloadType)
-	}
-	b.WriteString("}\n\n")
-
-	for _, e := range p.Events {
-		getter := eventGetters[e.Name]
-		payloadType := goType(e.PayloadType, typeNames)
-		fmt.Fprintf(&b, "// %s returns the channel of %q events.\n", getter, e.Name)
-		fmt.Fprintf(&b, "func (e *%s) %s() <-chan %s {\n\treturn e.%s\n}\n\n", eventsType, getter, payloadType, unexported(getter))
-	}
-
-	for _, nt := range namespaceTypes {
-		b.WriteString(nt)
-	}
 
 	return b.String(), nil
 }

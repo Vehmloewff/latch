@@ -2,7 +2,6 @@ package dart
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/vehmloewff/latchwire/names"
@@ -23,6 +22,14 @@ func methodNames(p *protocol.Protocol) []string {
 		out[i] = m.Name
 	}
 	return out
+}
+
+func eventType(p *protocol.Protocol) (protocol.TypeRef, error) {
+	ref, ok := p.EventRef()
+	if !ok {
+		return protocol.TypeRef{}, fmt.Errorf("protocol has no event type")
+	}
+	return ref, nil
 }
 
 // eventPropertyNames maps every event's full dotted name to its camelCase
@@ -188,25 +195,13 @@ func renderEventsAccessorClass(clientName string, connectedName string, p *proto
 // surface) classes, plus one private namespace class per non-leaf method
 // path segment.
 func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[string]string) (string, error) {
-	methodTree, err := names.BuildMethodTree(methodNames(p))
-	if err != nil {
-		return "", err
-	}
-	eventProps, err := eventPropertyNames(p)
-	if err != nil {
-		return "", err
+	eventRef, ok := p.EventRef()
+	if !ok {
+		return "", fmt.Errorf("protocol has no event type")
 	}
 
-	methods := methodIndex(p)
 	connectedName := "Connected" + clientName
-	connectType := dartType(p.ConnectType, typeNames)
-
-	var namespaceClasses []string
-	collectNamespaceClasses(clientName, connectedName, methodTree, nil, methods, typeNames, &namespaceClasses)
-	sort.Strings(namespaceClasses) // deterministic, and grouping doesn't matter semantically
-
-	eventsClassBody, eventsClassName := renderEventsAccessorClass(clientName, connectedName, p, eventProps, typeNames)
-
+	payloadType := dartType(eventRef, typeNames)
 	var b strings.Builder
 	b.WriteString("import 'dart:async';\n\n")
 	b.WriteString("import 'models.dart';\n")
@@ -215,27 +210,27 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 	fmt.Fprintf(&b, "class %s {\n", clientName)
 	b.WriteString("  final ClientOptions options;\n\n")
 	fmt.Fprintf(&b, "  %s(this.options);\n\n", clientName)
-	fmt.Fprintf(&b, "  Future<%s> connect(%s params) async {\n", connectedName, connectType)
-	fmt.Fprintf(&b, "    final handshake = await connectSocket(options.url, %q, %q, params.toJson());\n", p.Name, p.Version)
+	fmt.Fprintf(&b, "  Future<%s> connect() async {\n", connectedName)
+	fmt.Fprintf(&b, "    final handshake = await connectSocket(options.url, %q);\n", p.Version)
 	fmt.Fprintf(&b, "    return %s(handshake);\n", connectedName)
 	b.WriteString("  }\n")
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(&b, "class %s extends BaseConnection {\n", connectedName)
-	b.WriteString(renderEventFields(p, typeNames))
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "  late final %s events = %s(this);\n\n", eventsClassName, eventsClassName)
+	fmt.Fprintf(&b, "  final StreamController<%s> _eventsController = StreamController<%s>.broadcast();\n", payloadType, payloadType)
+	fmt.Fprintf(&b, "  Stream<%s> get events => _eventsController.stream;\n\n", payloadType)
 	fmt.Fprintf(&b, "  %s(HandshakeResult handshake) : super(handshake);\n\n", connectedName)
-	b.WriteString(renderRootMembers(clientName, methodTree, methods, typeNames))
-	b.WriteString("\n")
-	b.WriteString(renderDispatchEvent(p, typeNames))
-	b.WriteString("}\n\n")
-
-	b.WriteString(eventsClassBody)
-
-	for _, nc := range namespaceClasses {
-		b.WriteString(nc)
+	for _, m := range p.Methods {
+		respType := dartType(m.ResponseType, typeNames)
+		reqType := dartType(m.RequestType, typeNames)
+		fmt.Fprintf(&b, "  Future<%s> %s(%s req) => call(\n", respType, names.CamelCase(m.Name), reqType)
+		fmt.Fprintf(&b, "        %q,\n", m.Name)
+		b.WriteString("        req.toJson(),\n")
+		fmt.Fprintf(&b, "        (raw) => %s,\n", decodeExpr("raw", m.ResponseType, typeNames))
+		b.WriteString("      );\n\n")
 	}
-
+	b.WriteString("  @override\n")
+	fmt.Fprintf(&b, "  void dispatchEvent(dynamic payload) {\n    _eventsController.add(%s);\n  }\n", decodeExpr("payload", eventRef, typeNames))
+	b.WriteString("}\n\n")
 	return b.String(), nil
 }

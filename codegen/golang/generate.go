@@ -16,24 +16,17 @@ import (
 
 // Options configures Go client generation.
 type Options struct {
-	// Package is the generated package name. Defaults to
-	// snake_case(protocol name) + "client" (no underscore, since Go package
-	// names conventionally avoid them), or "latchwireclient" if the
-	// protocol has no name.
+	// Package is the generated package name. Defaults to "latchwireclient".
 	Package string
 
 	// ClientName is the base name for the generated types: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to PascalCase(protocol name) +
-	// "Client", or "LatchwireClient" if the protocol has no name.
+	// and "Connected<Name>Client". Defaults to "LatchwireClient".
 	ClientName string
 }
 
-func (o Options) resolve(p *protocol.Protocol) Options {
+func (o Options) resolve(_ *protocol.Protocol) Options {
 	out := o
 	base := "latchwire"
-	if p.Name != "" {
-		base = p.Name
-	}
 	if out.Package == "" {
 		out.Package = names.CamelCase(base) + "client"
 	}
@@ -47,6 +40,9 @@ func (o Options) resolve(p *protocol.Protocol) Options {
 // relative file path to file contents. It is deterministic: the same
 // protocol always produces byte-identical output.
 func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
+	if err := names.ValidateIdentifiers(methodNames(p)); err != nil {
+		return nil, fmt.Errorf("golang: %w", err)
+	}
 	opts = opts.resolve(p)
 
 	typeNames, err := names.AssignTypeNames(p.Types)
@@ -54,7 +50,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("golang: %w", err)
 	}
 
-	header := codegen.HeaderComment(p.Name, p.Version)
+	header := codegen.HeaderComment(p.Version)
 
 	typesSrc := header + generateTypesFile(opts.Package, p, typeNames)
 	typesFormatted, err := format.Source([]byte(typesSrc))

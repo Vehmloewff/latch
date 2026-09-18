@@ -20,7 +20,7 @@ type methodEntry struct {
 	responseValidator *jsonschema.Validator // only set when Options.ValidateResponses
 }
 
-// eventEntry is the internal registry record for one registered event.
+// eventEntry is retained only for source compatibility with old tooling.
 type eventEntry struct {
 	name        string
 	payloadType reflect.Type
@@ -36,8 +36,7 @@ type MethodDescriptor struct {
 	ResponseType reflect.Type
 }
 
-// EventDescriptor is a read-only view of a registered event, returned by
-// Server.Events for introspection and tooling.
+// EventDescriptor is retained for source compatibility with old tooling.
 type EventDescriptor struct {
 	Name        string
 	PayloadType reflect.Type

@@ -2,7 +2,7 @@ package dart
 
 // runtimeBody is the language runtime shared by every generated Dart
 // client: WebSocket transport (via package:web_socket_channel, which
-// works across the Dart VM, Flutter, and web), the connect handshake,
+// works across the Dart VM, Flutter, and web), connection setup,
 // request-ID correlation, and event dispatch. It never depends on any
 // particular protocol, so it is emitted verbatim rather than templated.
 const runtimeBody = `import 'dart:async';
@@ -12,12 +12,13 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Thrown for every RPC rejection and connect failure.
 class LatchwireError extends Error {
+  final String code;
   final String message;
 
-  LatchwireError(this.message);
+  LatchwireError(this.code, this.message);
 
   @override
-  String toString() => 'LatchwireError: $message';
+  String toString() => 'LatchwireError($code): $message';
 }
 
 /// Thrown when a value received from the server does not match a
@@ -38,12 +39,8 @@ class ClientOptions {
   const ClientOptions(this.url);
 }
 
-/// The live channel plus any frames that arrived after "connected" but
-/// before the caller (a generated Connected*Client's constructor) could
-/// install its own message handler - e.g. an event sent from OnConnect can
-/// share the same underlying read as the handshake response. BaseConnection
-/// replays these, in order, so no frame is ever silently dropped by the
-/// handshake race.
+/// The live channel plus any frames that arrived before a generated
+/// Connected*Client's constructor could install its message handler.
 class HandshakeResult {
   final WebSocketChannel channel;
   final StreamSubscription<dynamic> subscription;
@@ -52,9 +49,8 @@ class HandshakeResult {
   HandshakeResult(this.channel, this.subscription, this.bufferedMessages);
 }
 
-/// Performs the WebSocket connect + Latchwire handshake, completing only
-/// after the server's "connected" frame arrives (or failing with the
-/// connection's connection_error). Used by every generated Client.connect().
+/// Opens the WebSocket. Latchwire has no client handshake; the server runs
+/// OnConnect for the HTTP upgrade request.
 ///
 /// package:web_socket_channel's channel.stream is single-subscription, so
 /// only one Dart Stream.listen() call is ever legal on it - unlike a
@@ -65,70 +61,19 @@ class HandshakeResult {
 /// (subscription.onData/onDone/onError) rather than calling listen() again.
 Future<HandshakeResult> connectSocket(
   Uri url,
-  String protocolName,
-  String protocolVersion,
-  Map<String, dynamic> payload,
+  String version,
 ) async {
-  final channel = WebSocketChannel.connect(url);
+  final query = Map<String, String>.from(url.queryParameters);
+  query['version'] = version;
+  final channel = WebSocketChannel.connect(url.replace(queryParameters: query));
   await channel.ready;
 
   final bufferedMessages = <String>[];
-  final completer = Completer<HandshakeResult>();
-  var settled = false;
-
   late StreamSubscription<dynamic> sub;
-  sub = channel.stream.listen(
-    (dynamic data) {
-      if (settled) {
-        bufferedMessages.add(data as String);
-        return;
-      }
-
-      Map<String, dynamic> env;
-      try {
-        env = jsonDecode(data as String) as Map<String, dynamic>;
-      } catch (_) {
-        settled = true;
-        channel.sink.close(1002, 'malformed handshake response');
-        completer.completeError(
-          LatchwireError('malformed response during connect'),
-        );
-        return;
-      }
-
-      if (env['type'] == 'connected') {
-        settled = true;
-        completer.complete(HandshakeResult(channel, sub, bufferedMessages));
-      } else if (env['type'] == 'connection_error') {
-        settled = true;
-        channel.sink.close();
-        completer.completeError(LatchwireError(
-          env['error'] as String? ?? 'connection rejected',
-        ));
-      }
-    },
-    onError: (Object err, StackTrace st) {
-      if (settled) return;
-      settled = true;
-      completer.completeError(LatchwireError(err.toString()));
-    },
-    onDone: () {
-      if (settled) return;
-      settled = true;
-      completer.completeError(
-        LatchwireError('connection closed before the handshake completed'),
-      );
-    },
-  );
-
-  channel.sink.add(jsonEncode({
-    'type': 'connect',
-    'protocol': protocolName,
-    'version': protocolVersion,
-    'payload': payload,
-  }));
-
-  return completer.future;
+  sub = channel.stream.listen((dynamic data) {
+    bufferedMessages.add(data as String);
+  });
+  return HandshakeResult(channel, sub, bufferedMessages);
 }
 
 class _PendingRequest {
@@ -193,7 +138,7 @@ abstract class BaseConnection {
     TResp Function(dynamic raw) decode,
   ) {
     if (_closed) {
-      return Future<TResp>.error(LatchwireError('the connection is closed'));
+      return Future<TResp>.error(LatchwireError('connection_closed', 'the connection is closed'));
     }
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
@@ -202,9 +147,8 @@ abstract class BaseConnection {
     return completer.future.then((raw) => decode(raw));
   }
 
-  /// Implemented by the generated subclass to route "event" frames to the
-  /// right typed stream.
-  void dispatchEvent(String? event, dynamic payload);
+  /// Implemented by the generated subclass to decode the single event stream.
+  void dispatchEvent(dynamic payload);
 
   void _handleMessage(dynamic data) {
     Map<String, dynamic> env;
@@ -223,16 +167,20 @@ abstract class BaseConnection {
       case 'error':
         final id = env['id'] as String?;
         final pending = id != null ? _pending.remove(id) : null;
+        final err = env['error'] as Map<String, dynamic>?;
         pending?.completer.completeError(LatchwireError(
-          env['error'] as String? ?? 'internal error',
+          err?['code'] as String? ?? 'internal_error',
+          err?['message'] as String? ?? 'internal error',
         ));
         break;
       case 'event':
-        dispatchEvent(env['event'] as String?, env['payload']);
+        dispatchEvent(env['payload']);
         break;
       case 'connection_error':
+        final err = env['error'] as Map<String, dynamic>?;
         _failAllPending(LatchwireError(
-          env['error'] as String? ?? 'connection error',
+          err?['code'] as String? ?? 'internal_error',
+          err?['message'] as String? ?? 'connection error',
         ));
         _handleClose();
         break;
@@ -244,7 +192,7 @@ abstract class BaseConnection {
   void _handleClose() {
     if (_closed) return;
     _closed = true;
-    _failAllPending(LatchwireError('the connection is closed'));
+    _failAllPending(LatchwireError('connection_closed', 'the connection is closed'));
   }
 
   void _failAllPending(LatchwireError err) {

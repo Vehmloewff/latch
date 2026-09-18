@@ -1,25 +1,21 @@
-// Package client is Latchwire's Go client runtime: WebSocket transport, the
-// connect handshake, request/response correlation, and event dispatch.
+// Package client is Latchwire's Go client runtime: WebSocket transport,
+// request/response correlation, and event dispatch.
 // Every generated Go client (see codegen/golang) imports this package
 // rather than reimplementing transport logic itself; generated code
-// contains only DTOs, method wrappers, and event registrations.
+// contains only DTOs, method wrappers, and the one event stream.
 package client
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
 	"github.com/coder/websocket"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/vehmloewff/latchwire/wire"
-	"github.com/vehmloewff/report"
 )
 
 // eventBufferSize bounds the per-event channel returned by RegisterEvent.
@@ -28,22 +24,26 @@ import (
 // blocking the connection's single read goroutine.
 const eventBufferSize = 64
 
-func recordSpanError(span trace.Span, message string, err error) {
-	if err != nil {
-		span.RecordError(err)
-	}
-	span.SetStatus(codes.Error, message)
+// Error is Latchwire's structured application/protocol error, matching the
+// wire error envelope's {code, message} shape.
+type Error struct {
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 type pendingResult struct {
 	payload json.RawMessage
-	err     report.Err
+	err     *Error
 }
 
 // Conn is a live Latchwire connection. Generated code never constructs one
-// directly: Connect performs the handshake and returns a Conn whose
-// message loop has not yet started, so that generated code can finish
-// registering event handlers (via RegisterEvent) before any frame can
+// directly: Connect dials the WebSocket and returns a Conn whose
+// message loop has not yet started, so generated code can register the event
+// stream before any frame can
 // possibly be dispatched — see Start.
 type Conn struct {
 	ws *websocket.Conn
@@ -63,103 +63,42 @@ type Conn struct {
 	closeOnce sync.Once
 }
 
-// Connect dials url, performs the Latchwire connect handshake with the
-// given protocol name/version and connect payload, and returns a Conn once
-// the server's "connected" frame arrives. If the server rejects the
-// connection, the returned error is a report.Err carrying its message.
+// Connect dials rawURL and returns a live Conn. The protocol version is added
+// as the "version" query parameter; no initial setup frame is sent.
 //
 // Connect does not start reading further frames — the caller (generated
 // code) must finish wiring up event handlers via RegisterEvent and then
 // call Start.
-func Connect(ctx context.Context, url string, protocolName string, protocolVersion string, payload any) (*Conn, error) {
-	ctx, span := otel.Tracer("github.com/vehmloewff/latchwire/client").Start(ctx, "latchwire.client.connect",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("latchwire.protocol", protocolName),
-			attribute.String("latchwire.version", protocolVersion),
-		),
-	)
-	defer span.End()
-
-	ws, _, err := websocket.Dial(ctx, url, nil)
+func Connect(ctx context.Context, rawURL, version string) (*Conn, error) {
+	target, err := addVersionQuery(rawURL, version)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "latchwire: dial failed")
+		return nil, fmt.Errorf("latchwire: build connection URL: %w", err)
+	}
+	ws, _, err := websocket.Dial(ctx, target, nil)
+	if err != nil {
 		return nil, fmt.Errorf("latchwire: dial: %w", err)
 	}
-
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		_ = ws.Close(websocket.StatusInternalError, "")
-		recordSpanError(span, "latchwire: marshal connect payload failed", err)
-		return nil, fmt.Errorf("latchwire: marshal connect payload: %w", err)
-	}
-
-	connectRaw, err := json.Marshal(wire.Envelope{
-		Type:     wire.FrameConnect,
-		Protocol: protocolName,
-		Version:  protocolVersion,
-		Payload:  raw,
-	})
-	if err != nil {
-		_ = ws.Close(websocket.StatusInternalError, "")
-		recordSpanError(span, "latchwire: marshal connect frame failed", err)
-		return nil, fmt.Errorf("latchwire: marshal connect frame: %w", err)
-	}
-
-	if err := ws.Write(ctx, websocket.MessageText, connectRaw); err != nil {
-		_ = ws.Close(websocket.StatusInternalError, "")
-		recordSpanError(span, "latchwire: write connect frame failed", err)
-		return nil, fmt.Errorf("latchwire: write connect frame: %w", err)
-	}
-
-	_, respRaw, err := ws.Read(ctx)
-	if err != nil {
-		_ = ws.Close(websocket.StatusInternalError, "")
-		recordSpanError(span, "latchwire: read handshake response failed", err)
-		return nil, fmt.Errorf("latchwire: read handshake response: %w", err)
-	}
-
-	var env wire.Envelope
-	if err := json.Unmarshal(respRaw, &env); err != nil {
-		_ = ws.Close(websocket.StatusProtocolError, "malformed handshake response")
-		recordSpanError(span, "latchwire: malformed handshake response", err)
-		return nil, fmt.Errorf("latchwire: malformed handshake response: %w", err)
-	}
-
-	switch env.Type {
-	case wire.FrameConnected:
-		span.SetStatus(codes.Ok, "")
-		return &Conn{
-			ws:            ws,
-			pending:       make(map[string]chan pendingResult),
-			eventHandlers: make(map[string]func(json.RawMessage)),
-			closed:        make(chan struct{}),
-		}, nil
-
-	case wire.FrameConnectionError:
-		_ = ws.Close(websocket.StatusNormalClosure, "")
-		if env.Error != "" {
-			err := wireErrToError(env.Error, "connection rejected")
-			recordSpanError(span, "latchwire: connection rejected", err)
-			return nil, err
-		}
-		err := wireErrToError("", "connection rejected")
-		recordSpanError(span, "latchwire: connection rejected", err)
-		return nil, err
-
-	default:
-		_ = ws.Close(websocket.StatusProtocolError, "unexpected frame during handshake")
-		recordSpanError(span, "latchwire: unexpected frame during handshake",
-			report.New(fmt.Sprintf("unexpected frame type %q", env.Type)))
-		return nil, fmt.Errorf("latchwire: unexpected frame type %q during handshake", env.Type)
-	}
+	return &Conn{
+		ws:            ws,
+		pending:       make(map[string]chan pendingResult),
+		eventHandlers: make(map[string]func(json.RawMessage)),
+		closed:        make(chan struct{}),
+	}, nil
 }
 
-// Start begins the connection's read loop, dispatching responses to
-// pending Call invocations and events to their registered handlers. Call
-// it exactly once, after registering every event handler with
-// RegisterEvent.
+func addVersionQuery(rawURL, version string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	query := u.Query()
+	query.Set("version", version)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
+}
+
+// Start begins the connection's read loop, dispatching responses and the
+// single event stream. Call it exactly once, after registering the stream.
 func (c *Conn) Start() {
 	go c.readLoop()
 }
@@ -196,25 +135,24 @@ func (c *Conn) readLoop() {
 		case wire.FrameResponse:
 			c.deliver(env.ID, env.Payload, nil)
 		case wire.FrameError:
-			c.deliver(env.ID, nil, wireErrToError(env.Error, "internal error"))
+			c.deliver(env.ID, nil, wireErrToError(env.Error, "internal_error", "internal error"))
 		case wire.FrameEvent:
-			c.dispatchEvent(env.Event, env.Payload)
+			c.dispatchEvent(env.Payload)
 		case wire.FrameConnectionError:
-			err := wireErrToError(env.Error, "connection error")
-			c.failAll(err)
+			c.failAll(wireErrToError(env.Error, "internal_error", "connection error"))
 			return
 		}
 	}
 }
 
-func wireErrToError(message, defaultMessage string) report.Err {
-	if message == "" {
-		message = defaultMessage
+func wireErrToError(we *wire.Error, defaultCode, defaultMessage string) *Error {
+	if we == nil {
+		return &Error{Code: defaultCode, Message: defaultMessage}
 	}
-	return report.New(message).Wrap(message).Dump("source", "latchwire")
+	return &Error{Code: we.Code, Message: we.Message}
 }
 
-func (c *Conn) deliver(id string, payload json.RawMessage, err report.Err) {
+func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {
 	if id == "" {
 		return
 	}
@@ -229,16 +167,16 @@ func (c *Conn) deliver(id string, payload json.RawMessage, err report.Err) {
 	}
 }
 
-func (c *Conn) dispatchEvent(name string, raw json.RawMessage) {
+func (c *Conn) dispatchEvent(raw json.RawMessage) {
 	c.eventMu.Lock()
-	h := c.eventHandlers[name]
+	h := c.eventHandlers[""]
 	c.eventMu.Unlock()
 	if h != nil {
 		h(raw)
 	}
 }
 
-func (c *Conn) failAll(err report.Err) {
+func (c *Conn) failAll(err *Error) {
 	c.pendingMu.Lock()
 	pending := c.pending
 	c.pending = make(map[string]chan pendingResult)
@@ -251,7 +189,7 @@ func (c *Conn) failAll(err report.Err) {
 func (c *Conn) terminate() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		c.failAll(report.New("the connection is closed"))
+		c.failAll(&Error{Code: "connection_closed", Message: "the connection is closed"})
 
 		c.eventMu.Lock()
 		closers := c.eventClosers
@@ -266,23 +204,14 @@ func (c *Conn) terminate() {
 // call sends a request frame for method and blocks until its response,
 // error, ctx cancellation, or connection close.
 func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessage, error) {
-	ctx, span := otel.Tracer("github.com/vehmloewff/latchwire/client").Start(ctx, "latchwire.client.request",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(attribute.String("latchwire.method", method)),
-	)
-	defer span.End()
-
 	select {
 	case <-c.closed:
-		err := report.New("the connection is closed")
-		recordSpanError(span, "latchwire: connection closed", err)
-		return nil, err
+		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
 	default:
 	}
 
 	raw, err := json.Marshal(req)
 	if err != nil {
-		recordSpanError(span, "latchwire: marshal request failed", err)
 		return nil, fmt.Errorf("latchwire: marshal request: %w", err)
 	}
 
@@ -298,7 +227,6 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		recordSpanError(span, "latchwire: marshal request frame failed", err)
 		return nil, fmt.Errorf("latchwire: marshal request frame: %w", err)
 	}
 
@@ -309,28 +237,22 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		recordSpanError(span, "latchwire: write request failed", writeErr)
 		return nil, fmt.Errorf("latchwire: write request: %w", writeErr)
 	}
 
 	select {
 	case res := <-ch:
 		if res.err != nil {
-			recordSpanError(span, "latchwire: request returned an error", res.err)
 			return nil, res.err
 		}
-		span.SetStatus(codes.Ok, "")
 		return res.payload, nil
 	case <-ctx.Done():
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		recordSpanError(span, "latchwire: request canceled", ctx.Err())
 		return nil, ctx.Err()
 	case <-c.closed:
-		err := report.New("the connection is closed")
-		recordSpanError(span, "latchwire: connection closed", err)
-		return nil, err
+		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
 	}
 }
 
@@ -351,20 +273,20 @@ func Call[TResp any](ctx context.Context, conn *Conn, method string, req any) (T
 	return resp, nil
 }
 
-// RegisterEvent registers conn's handler for the named event and returns a
-// receive-only channel of decoded payloads. It must be called for every
-// event before conn.Start(); calling it afterward risks missing events
-// delivered between Start() and the registration.
+// RegisterEvent registers conn's handler for the single event stream and
+// returns a receive-only channel of decoded payloads. The optional name is
+// ignored and exists only for source compatibility with older generated
+// clients. Call it before conn.Start().
 //
 // The returned channel is closed when the connection closes. Delivery is
 // best-effort: if the consumer isn't keeping up, once the internal buffer
 // (capacity eventBufferSize) is full, further events for this stream are
 // dropped rather than blocking the connection's single read goroutine.
-func RegisterEvent[T any](conn *Conn, name string) <-chan T {
+func RegisterEvent[T any](conn *Conn, _ ...string) <-chan T {
 	ch := make(chan T, eventBufferSize)
 
 	conn.eventMu.Lock()
-	conn.eventHandlers[name] = func(raw json.RawMessage) {
+	conn.eventHandlers[""] = func(raw json.RawMessage) {
 		var v T
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return

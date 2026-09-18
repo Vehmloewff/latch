@@ -1,6 +1,6 @@
 // Package reflectapi is the single reflection stage of Latchwire. It walks
-// Go reflect.Type values reachable from registered connect params, method
-// requests/responses, and event payloads, and produces the normalized
+// Go reflect.Type values reachable from the event payload and method
+// requests/responses, and produces the normalized
 // protocol.Protocol IR. No other package in Latchwire inspects reflect.Type
 // directly.
 package reflectapi

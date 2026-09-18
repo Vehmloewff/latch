@@ -60,9 +60,9 @@ type Constraints struct {
 	Format    string
 }
 
-// TypeRef refers to a type used in a field, method request/response, event
-// payload, or connect payload. For KindStruct and KindEnum, NamedType is the
-// ID of the corresponding entry in Protocol.Types.
+// TypeRef refers to a type used in a field, method request/response, or the
+// server event payload. For KindStruct and KindEnum, NamedType is the ID of
+// the corresponding entry in Protocol.Types.
 type TypeRef struct {
 	Kind Kind
 
@@ -118,25 +118,61 @@ type Method struct {
 	ResponseType TypeRef
 }
 
-// Event is one registered server-to-client event.
-type Event struct {
-	Name        string
-	PayloadType TypeRef
-}
-
 // Protocol is the complete normalized representation of a Latchwire API,
 // ready to drive JSON Schema generation, runtime validation, the manifest,
 // and every language code generator.
 type Protocol struct {
-	Name        string
-	Version     string
-	ConnectType TypeRef
-	Methods     []Method
-	Events      []Event
+	// Name is retained only for decoding older manifests. New servers do not
+	// set or use a protocol name.
+	Name    string `json:"-"`
+	Version string
+	Methods []Method
 
-	// Types holds every named struct/enum type reachable from ConnectType,
-	// any Method, or any Event, sorted deterministically by ID.
+	// EventType is the one server-to-client event type. Applications that need
+	// several event variants should model them as one tagged payload type.
+	EventType TypeRef
+
+	// ConnectType and Events are retained as ignored compatibility fields for
+	// manifests and callers built against the pre-v1.1 IR. New protocol
+	// values must use EventType; downstream consumers prefer EventType and
+	// never emit connect/event-name registrations.
+	//
+	// Deprecated: use EventType.
+	ConnectType TypeRef `json:"-"`
+	// Deprecated: use EventType.
+	Events []LegacyEvent `json:"-"`
+
+	// Types holds every named struct/enum type reachable from EventType or
+	// any Method, sorted deterministically by ID.
 	Types []*NamedType
+}
+
+// LegacyEvent is the former named-event representation. It exists only so
+// older manifests can still be decoded; new servers never populate it.
+//
+// Deprecated: use Protocol.EventType.
+type LegacyEvent struct {
+	Name        string
+	PayloadType TypeRef
+}
+
+// Event is kept as an alias for source compatibility with callers that build
+// legacy IR values directly.
+//
+// Deprecated: use Protocol.EventType.
+type Event = LegacyEvent
+
+// EventRef returns the protocol's single event type. The legacy fallback is
+// intentionally limited to one event so malformed old IR cannot silently
+// become a different protocol.
+func (p *Protocol) EventRef() (TypeRef, bool) {
+	if p.EventType.Kind != "" {
+		return p.EventType, true
+	}
+	if len(p.Events) == 1 {
+		return p.Events[0].PayloadType, true
+	}
+	return TypeRef{}, false
 }
 
 // TypeByID returns the named type with the given ID, or nil if absent.

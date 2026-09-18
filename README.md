@@ -22,20 +22,18 @@ Go types + registered handlers
        │   TypeScript   Dart / Go client
        ▼
  runtime validation
- (every connect + request)
+ (every request + event)
 ```
 
 ## The smallest complete example
 
-The server-side handler and connection callbacks return `report.Err`, which
-adds safe user messages and structured diagnostic context to application
-errors:
-
 ```go
-import "github.com/vehmloewff/report"
+type Event struct {
+    Kind string `json:"kind"`
+}
 
-type ConnectParams struct {
-    Token string `json:"token"`
+type State struct {
+    UserID string
 }
 
 type AddRequest struct {
@@ -51,16 +49,12 @@ type Tick struct {
     Value int `json:"value"`
 }
 
-func BuildAPI() *latchwire.Server[ConnectParams] {
-    lw := latchwire.New[ConnectParams](latchwire.Options{
-        ProtocolName:    "demo",
+func BuildAPI() *latchwire.Server[State] {
+    lw := latchwire.New[State](latchwire.Options{
         ProtocolVersion: "1",
     })
 
-    tick := latchwire.Event[Tick]("tick")
-    lw.RegisterEvent(tick)
-
-    lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
+    lw.OnConnect(func(ctx context.Context, emitter latchwire.Emitter[Event], conn *latchwire.Conn) (State, error) {
         go func() {
             ticker := time.NewTicker(time.Second)
             defer ticker.Stop()
@@ -69,23 +63,24 @@ func BuildAPI() *latchwire.Server[ConnectParams] {
                 case <-conn.Done():
                     return
                 case t := <-ticker.C:
-                    _ = tick.Send(conn, Tick{Value: t.Second()})
+                    _ = emitter.Send(Event{Kind: fmt.Sprint("tick:", t.Second())})
                 }
             }
         }()
-        return nil
+        return State{}, nil
     })
 
-    err := lw.Register("math.add", func(
+    lw.Register("mathAdd", func(
         ctx context.Context,
-        conn *latchwire.Conn[ConnectParams],
+        state State,
         req AddRequest,
-    ) (AddResponse, report.Err) {
+    ) (AddResponse, error) {
         return AddResponse{Result: req.A + req.B}, nil
     })
-    if err != nil {
-        log.Fatal(err)
-    }
+
+    lw.OnDisconnect(func(ctx context.Context, state State) {
+    	// release state-owned resources
+    })
 
     return lw
 }
@@ -109,8 +104,8 @@ func main() {
     lw := BuildAPI()
     err := lw.Generate(latchwire.GenerateOptions{
         TypeScript: &latchwire.TypeScriptOptions{OutputDir: "./generated/typescript"},
-        Dart:       &latchwire.DartOptions{OutputDir: "./generated/dart", Package: "demo_client"},
-        Go:         &latchwire.GoOptions{OutputDir: "./generated/go", Package: "democlient"},
+        Dart:       &latchwire.DartOptions{OutputDir: "./generated/dart", Package: "latchwire_client"},
+        Go:         &latchwire.GoOptions{OutputDir: "./generated/go", Package: "latchwireclient"},
     })
     if err != nil {
         log.Fatal(err)
@@ -121,47 +116,47 @@ func main() {
 ### The generated TypeScript client
 
 ```ts
-import { DemoClient } from "./generated/typescript";
+import { LatchwireClient } from "./generated/typescript";
 
-const client = new DemoClient({ url: "ws://localhost:8080/ws" });
-const conn = await client.connect({ token: "abc" });
+const client = new LatchwireClient({ url: "ws://localhost:8080/ws" });
+const conn = await client.connect();
 
-const result = await conn.math.add({ a: 1, b: 2 });
+const result = await conn.mathAdd({ a: 1, b: 2 });
 result.result; // number, statically known
 
-conn.events.tick.subscribe((event) => {
-  event.value; // number, statically known
+conn.events.subscribe((event) => {
+  event.kind; // string, statically known
 });
 ```
 
 ### The generated Dart client
 
 ```dart
-final client = DemoClient(ClientOptions(Uri.parse('ws://localhost:8080/ws')));
-final conn = await client.connect(ConnectParams(token: 'abc'));
+final client = LatchwireClient(ClientOptions(Uri.parse('ws://localhost:8080/ws')));
+final conn = await client.connect();
 
-final result = await conn.math.add(AddRequest(a: 1, b: 2));
+final result = await conn.mathAdd(AddRequest(a: 1, b: 2));
 print(result.result);
 
-conn.events.tick.listen((event) {
-  print(event.value);
+conn.events.listen((event) {
+  print(event.kind);
 });
 ```
 
 ### The generated Go client
 
 ```go
-client := democlient.New("ws://localhost:8080/ws")
-conn, err := client.Connect(ctx, democlient.ConnectParams{Token: "abc"})
+client := latchwireclient.New("ws://localhost:8080/ws")
+conn, err := client.Connect(ctx)
 if err != nil {
     log.Fatal(err)
 }
 
-result, err := conn.Math.Add(ctx, democlient.AddRequest{A: 1, B: 2})
+result, err := conn.MathAdd(ctx, latchwireclient.AddRequest{A: 1, B: 2})
 fmt.Println(result.Result)
 
-for tick := range conn.Events.Tick() {
-    fmt.Println(tick.Value)
+for event := range conn.Events() {
+    fmt.Println(event.Kind)
 }
 ```
 
@@ -172,36 +167,32 @@ missing feature in the generated code.
 
 ## How it fits together
 
-1. **Define Go types** for your connect payload, every method's
-   request/response, and every event's payload. Each must be a named,
+1. **Define Go types** for every method's request/response and one event
+   payload. Each must be a named,
    exported struct (see [Supported types](#supported-go-type-system)).
-2. **Create a server**: `latchwire.New[ConnectParams](latchwire.Options{...})`.
-3. **Register methods**: `lw.Register("user.get", handler)`, where `handler`
+2. **Create a server**: `latchwire.New[State](latchwire.Options{...})`.
+3. **Register methods**: `lw.Register("userGet", handler)`, where `handler`
    has the one canonical signature
-   `func(context.Context, *latchwire.Conn[C], Request) (Response, report.Err)`.
+   `func(context.Context, State, Request) (Response, error)`.
    The signature is validated immediately, not on the first request.
-4. **Declare and register events**: `evt := latchwire.Event[T]("name")`,
-   then `lw.RegisterEvent(evt)`.
-5. **Add `OnConnect`** (optional) for authentication, subscriptions, or any
-   other per-connection setup. `conn.Params()` is already schema-validated
-   and decoded by the time your handler runs.
-6. **Serve it**: a `*latchwire.Server[C]` is an `http.Handler`.
-7. **Generate clients**: `lw.Generate(latchwire.GenerateOptions{...})` — a
+4. **Add `OnConnect`** (optional) for authentication, subscriptions, or any
+   other per-connection setup. It returns the `State` passed to methods and
+   `OnDisconnect`; `conn.Request()` is the HTTP upgrade request.
+5. **Serve it**: a `*latchwire.Server[State]` is an `http.Handler`.
+6. **Generate clients**: `lw.Generate(latchwire.GenerateOptions{...})` — a
    plain function call from a plain Go program (see
    `examples/basic/gen`), never `go generate`.
-8. **Call the generated APIs** from TypeScript, Dart, or Go, exactly as
+7. **Call the generated APIs** from TypeScript, Dart, or Go, exactly as
    shown above.
 
 ## Wire protocol
 
 JSON text frames over a WebSocket, one discriminated envelope shape for
-every direction: `connect` → `connected`, `request` → `response`/`error`,
-and server-initiated `event`. A connection must send `connect` before
-anything else; the server validates that payload against generated JSON
-Schema, decodes it, runs `OnConnect`, and only then sends `connected`,
-followed by any events your `OnConnect` sent (they're buffered until then —
-`connected` always arrives first). See `wire/envelope.go` for the
-exact frame shapes.
+requests, responses/errors, and the single server-initiated `event` stream.
+The HTTP upgrade request is passed to `OnConnect`; no client setup frame is
+sent. Generated clients add the configured protocol version as the `version`
+query parameter on the WebSocket URL. See `wire/envelope.go` for the exact
+frame shapes.
 
 ## Supported Go type system
 
@@ -221,7 +212,7 @@ nullable semantics (`json:"name"` vs `,omitempty` vs pointer vs both).
 
 ```
 server.go, conn.go, method.go, event.go,
-protocol.go, generate.go               Public API (small and intentional)
+errors.go, protocol.go, generate.go    Public API (small and intentional)
 client/                                Public Go client runtime
 reflectapi/                            The one reflection → IR stage
 protocol/                              The normalized IR

@@ -16,17 +16,13 @@ import (
 // Options configures TypeScript generation.
 type Options struct {
 	// ClientName is the base name for the generated classes: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to PascalCase(protocol name) +
-	// "Client", or "LatchwireClient" if the protocol has no name.
+	// and "Connected<Name>Client". Defaults to "LatchwireClient".
 	ClientName string
 }
 
-func (o Options) clientName(p *protocol.Protocol) string {
+func (o Options) clientName(_ *protocol.Protocol) string {
 	if o.ClientName != "" {
 		return o.ClientName
-	}
-	if p.Name != "" {
-		return names.PascalCase(p.Name) + "Client"
 	}
 	return "LatchwireClient"
 }
@@ -35,12 +31,15 @@ func (o Options) clientName(p *protocol.Protocol) string {
 // relative file path to file contents. It is deterministic: the same
 // protocol always produces byte-identical output.
 func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
+	if err := names.ValidateIdentifiers(methodNames(p)); err != nil {
+		return nil, fmt.Errorf("typescript: %w", err)
+	}
 	typeNames, err := names.AssignTypeNames(p.Types)
 	if err != nil {
 		return nil, fmt.Errorf("typescript: %w", err)
 	}
 
-	header := codegen.HeaderComment(p.Name, p.Version)
+	header := codegen.HeaderComment(p.Version)
 	clientName := opts.clientName(p)
 
 	clientBody, err := generateClientFile(p, clientName, typeNames)

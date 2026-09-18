@@ -1,5 +1,5 @@
 // Package api is the single handwritten source of truth for the "basic"
-// example protocol: Go types, registered methods, registered events, and
+// example protocol: Go types, registered methods, one event type, and
 // an OnConnect handler. Both examples/basic/server (which serves it) and
 // examples/basic/gen (which generates TypeScript/Dart/Go clients from it)
 // call Build, so the served protocol and the generated clients can never
@@ -11,16 +11,9 @@ package api
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/report"
 )
-
-// ConnectParams is the connection setup payload every client must send.
-type ConnectParams struct {
-	Token string `json:"token" jsonschema:"minLength=1"`
-}
 
 // SubscribeRequest is the payload for the "room.subscribe" method.
 type SubscribeRequest struct {
@@ -68,91 +61,81 @@ type ProfileGetResponse struct {
 	Profile Profile `json:"profile"`
 }
 
-// MessageReceived is the payload for the "message.received" server event.
+// MessageReceived is one variant of the server event.
 type MessageReceived struct {
 	Room string `json:"room"`
 	Text string `json:"text"`
 }
 
-// PresenceChanged is the payload for the "presence.changed" server event.
+// PresenceChanged is one variant of the server event.
 type PresenceChanged struct {
 	UserID string `json:"userId"`
 	Online bool   `json:"online"`
 }
 
-// MessageReceivedEvent is the "message.received" event declaration, shared
-// by OnConnect (which sends a welcome message) and by anything else in the
-// application that wants to publish a message.
-var MessageReceivedEvent = latchwire.Event[MessageReceived]("message.received")
+// Event is the one server-to-client event. Kind selects the variant and only
+// the corresponding pointer is populated.
+type Event struct {
+	Kind     string           `json:"kind"`
+	Message  *MessageReceived `json:"message,omitempty"`
+	Presence *PresenceChanged `json:"presence,omitempty"`
+}
 
-// PresenceChangedEvent is the "presence.changed" event declaration, sent
-// once by OnConnect to demonstrate a second, independently typed event
-// stream.
-var PresenceChangedEvent = latchwire.Event[PresenceChanged]("presence.changed")
+// State is the per-connection application state created by OnConnect and
+// supplied to every method and OnDisconnect callback.
+type State struct {
+	ConnectedPath string
+}
 
 // Build constructs a fresh, fully registered Server. It is the one place
 // the "basic" protocol is defined; generated clients and the live server
 // are both produced by reflecting over exactly this registration.
-func Build() *latchwire.Server[ConnectParams] {
-	lw := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:    "basic",
+func Build() *latchwire.Server[State] {
+	lw := latchwire.New[State](latchwire.Options{
 		ProtocolVersion: "1",
 	})
 
-	if err := lw.RegisterEvent(MessageReceivedEvent); err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
-	if err := lw.RegisterEvent(PresenceChangedEvent); err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
-
-	err := lw.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		if conn.Params().Token == "" {
-			return report.New("a token is required").Hint(report.HintNotPermitted)
-		}
-		if err := MessageReceivedEvent.Send(conn, MessageReceived{
-			Room: "lobby",
-			Text: "welcome",
+	lw.OnConnect(func(ctx context.Context, emitter latchwire.Emitter[Event], conn *latchwire.Conn) (State, error) {
+		if err := emitter.Send(Event{
+			Kind: "message",
+			Message: &MessageReceived{
+				Room: "lobby",
+				Text: "welcome",
+			},
 		}); err != nil {
-			return report.From(err)
+			return State{}, err
 		}
-		if err := PresenceChangedEvent.Send(conn, PresenceChanged{
-			UserID: "self",
-			Online: true,
+		if err := emitter.Send(Event{
+			Kind: "presence",
+			Presence: &PresenceChanged{
+				UserID: "self",
+				Online: true,
+			},
 		}); err != nil {
-			return report.From(err)
+			return State{}, err
 		}
-		return nil
+		return State{ConnectedPath: conn.Request().URL.Path}, nil
 	})
-	if err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
 
-	err = lw.Register("room.subscribe", func(
+	lw.Register("roomSubscribe", func(
 		ctx context.Context,
-		conn *latchwire.Conn[ConnectParams],
+		state State,
 		req SubscribeRequest,
-	) (SubscribeResponse, report.Err) {
+	) (SubscribeResponse, error) {
 		return SubscribeResponse{OK: true}, nil
 	})
-	if err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
 
-	err = lw.Register("room.list", func(
+	lw.Register("roomList", func(
 		ctx context.Context,
-		conn *latchwire.Conn[ConnectParams],
+		state State,
 		req ListRoomsRequest,
-	) (ListRoomsResponse, report.Err) {
+	) (ListRoomsResponse, error) {
 		return ListRoomsResponse{Rooms: []string{"general", "lobby", "random"}}, nil
 	})
-	if err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
 
-	err = lw.Register("profile.get", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req ProfileGetRequest) (ProfileGetResponse, report.Err) {
+	lw.Register("profileGet", func(ctx context.Context, state State, req ProfileGetRequest) (ProfileGetResponse, error) {
 		if req.UserID == "missing" {
-			return ProfileGetResponse{}, report.New("user not found").Hint(report.HintNotFound)
+			return ProfileGetResponse{}, latchwire.NewError("not_found", "user not found")
 		}
 
 		nickname := "the " + req.UserID
@@ -174,9 +157,10 @@ func Build() *latchwire.Server[ConnectParams] {
 			},
 		}, nil
 	})
-	if err != nil {
-		panic(fmt.Errorf("basic api: %w", err))
-	}
+
+	lw.OnDisconnect(func(ctx context.Context, state State) {
+		_ = state
+	})
 
 	return lw
 }

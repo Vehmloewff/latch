@@ -4,7 +4,42 @@
 // snake_case.
 package names
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
+
+// IsIdentifier reports whether s is a non-empty ASCII identifier. Keeping the
+// rule language-neutral means the same method can be emitted as a method in
+// Go, TypeScript, and Dart.
+func IsIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+				return false
+			}
+			continue
+		}
+		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateIdentifiers checks the method names in an IR before a generator
+// emits them as source-level methods.
+func ValidateIdentifiers(methodNames []string) error {
+	for _, name := range methodNames {
+		if !IsIdentifier(name) {
+			return fmt.Errorf("method name %q must be a valid identifier", name)
+		}
+	}
+	return nil
+}
 
 // Segments splits a dotted method or event name into its path components.
 // "user.get" -> ["user", "get"]. "math.add" -> ["math", "add"].
