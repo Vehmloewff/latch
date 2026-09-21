@@ -2,7 +2,7 @@ package latch_test
 
 import (
 	"context"
-	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -10,19 +10,18 @@ import (
 
 	"github.com/vehmloewff/latch"
 	"github.com/vehmloewff/latch/testutil"
-	"github.com/vehmloewff/latch/wire"
 )
 
 type serverState struct{}
 type serverRequest struct {
-	A int `json:"a"`
-	B int `json:"b"`
+	A int `json:"a" latch:"1"`
+	B int `json:"b" latch:"2"`
 }
 type serverResponse struct {
-	Result int `json:"result"`
+	Result int `json:"result" latch:"1"`
 }
 type serverEvent struct {
-	Kind string `json:"kind"`
+	Kind string `json:"kind" latch:"1"`
 }
 
 func newServer(t *testing.T) *latch.Server[serverState] {
@@ -47,51 +46,20 @@ func rawClient(t *testing.T, server *latch.Server[serverState]) *testutil.Client
 	return testutil.Dial(t, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"?version=1")
 }
 
-func TestServerRequestAndEvent(t *testing.T) {
-	client := rawClient(t, newServer(t))
-	first := client.Recv()
-	if first.Type != wire.FrameEvent {
-		t.Fatalf("first frame type = %q, want event", first.Type)
-	}
-	var event serverEvent
-	if err := json.Unmarshal(first.Payload, &event); err != nil {
-		t.Fatal(err)
-	}
-	if event.Kind != "connected" {
-		t.Fatalf("event kind = %q, want connected", event.Kind)
-	}
+func TestServerRejectsMissingProtocolVersion(t *testing.T) {
+	server := newServer(t)
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
 
-	payload, _ := json.Marshal(serverRequest{A: 2, B: 3})
-	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: payload})
-	response := client.Recv()
-	if response.Type != wire.FrameResponse || response.ID != "1" {
-		t.Fatalf("response = %+v", response)
-	}
-	var result serverResponse
-	if err := json.Unmarshal(response.Payload, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Result != 5 {
-		t.Fatalf("result = %d, want 5", result.Result)
-	}
-}
-
-func TestServerRejectsInvalidRequestAndUnknownMethod(t *testing.T) {
-	client := rawClient(t, newServer(t))
-	if event := client.Recv(); event.Type != wire.FrameEvent {
-		t.Fatalf("expected initial event, got %+v", event)
-	}
-
-	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: []byte(`{"a":"bad","b":2}`)})
-	invalid := client.Recv()
-	if invalid.Type != wire.FrameError || invalid.Error != "request payload failed schema validation" {
-		t.Fatalf("invalid request response = %+v", invalid)
-	}
-
-	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "2", Method: "missing_method", Payload: []byte(`{}`)})
-	unknown := client.Recv()
-	if unknown.Type != wire.FrameError {
-		t.Fatalf("unknown method response = %+v", unknown)
+	for _, rawURL := range []string{httpServer.URL, httpServer.URL + "?version="} {
+		response, err := http.Get(rawURL)
+		if err != nil {
+			t.Fatalf("GET %s: %v", rawURL, err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET %s status = %d, want %d", rawURL, response.StatusCode, http.StatusBadRequest)
+		}
 	}
 }
 

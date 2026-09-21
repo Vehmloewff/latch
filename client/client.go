@@ -93,7 +93,6 @@ func addVersionQuery(rawURL, version string) (string, error) {
 	}
 	query := u.Query()
 	query.Set("version", version)
-	query.Set("binary", "1")
 	u.RawQuery = query.Encode()
 	return u.String(), nil
 }

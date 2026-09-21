@@ -50,7 +50,6 @@ Uint8List _messageBytes(dynamic data) {
 Future<HandshakeResult> connectSocket(Uri url, String version) async {
   final query = Map<String, String>.from(url.queryParameters);
   query['version'] = version;
-  query['binary'] = '1';
   final channel = WebSocketChannel.connect(url.replace(queryParameters: query));
   await channel.ready;
 

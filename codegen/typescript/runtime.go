@@ -235,7 +235,6 @@ export function connectSocket(
 ): Promise<HandshakeResult> {
   const target = new URL(url);
   target.searchParams.set("version", version);
-  target.searchParams.set("binary", "1");
   const ws = (factory ?? defaultWebSocketFactory)(target.toString());
   ws.binaryType = "arraybuffer";
   const bufferedMessages: Uint8Array[] = [];

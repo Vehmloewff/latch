@@ -39,7 +39,6 @@ type outboundFrame struct {
 type Conn struct {
 	server connServer
 	ws     *websocket.Conn
-	binary bool
 	logger *slog.Logger
 
 	request *http.Request
@@ -79,7 +78,6 @@ func newConn[S any](srv *Server[S], ws *websocket.Conn, req *http.Request) *Conn
 	c := &Conn{
 		server:   srv,
 		ws:       ws,
-		binary:   true,
 		logger:   srv.opts.Logger,
 		request:  req.Clone(ctx),
 		ctx:      ctx,

@@ -51,6 +51,11 @@ func (s *Server[S]) Events() []EventDescriptor {
 // closes. There is no client handshake: the HTTP upgrade request is available
 // through Conn.Request().
 func (s *Server[S]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("version") == "" {
+		http.Error(w, "latch: protocol version is required", http.StatusBadRequest)
+		return
+	}
+
 	if err := s.finalize(); err != nil {
 		s.logf(context.Background(), slog.LevelError, "latch: server misconfigured", "error", err)
 		http.Error(w, "latch: server misconfigured", http.StatusInternalServerError)
