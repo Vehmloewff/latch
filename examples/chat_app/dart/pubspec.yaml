@@ -1,4 +1,4 @@
-name: basic_client
+name: chat_app_client
 description: Generated Latch client. DO NOT EDIT.
 publish_to: "none"
 version: 0.1.0

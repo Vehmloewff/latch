@@ -12,7 +12,7 @@ validation, and client code generation without a separate schema file.
 
 - Strongly typed RPC methods and server-to-client events
 - Go-first API with compile-time handler validation
-- Runtime JSON Schema validation for requests and events
+- Reflection-driven binary encoding and decoding with stable numeric field IDs
 - Generated TypeScript, Dart, and Go clients
 - Deterministic client output
 - No `.proto`, OpenAPI document, or handwritten schema required
@@ -93,13 +93,13 @@ func main() {
     server := buildAPI()
 
     if err := server.GenerateTypeScript(latch.TypeScriptOptions{
-        OutputDir: "./generated/typescript",
+        OutputDir: "./typescript",
     }); err != nil {
         log.Fatal(err)
     }
 
     if err := server.GenerateDart(latch.DartOptions{
-        OutputDir: "./generated/dart",
+        OutputDir: "./dart",
         Package:   "latch_client",
     }); err != nil {
         log.Fatal(err)
@@ -114,14 +114,32 @@ func main() {
 }
 ```
 
-Use `GenerateSchema` when integrating the normalized schema with custom tooling.
+Use `GenerateSchema` when integrating the in-process normalized protocol IR with custom generators.
 
 ## Generated clients
+
+The basic example's complete cross-language check is intentionally a standalone
+command rather than part of `go test`:
+
+```sh
+go run ./cmd/cross-language-test
+```
+
+Language arguments are optional: `go`, `dart`, and `typescript`. With no
+arguments all languages run; for example:
+
+```sh
+go run ./cmd/cross-language-test typescript dart
+```
+
+The command regenerates the clients, runs static checks for the selected
+languages, starts the Go server when needed, then runs the selected integration
+tests.
 
 TypeScript:
 
 ```ts
-import { LatchClient } from "./generated/typescript";
+import { LatchClient } from "./typescript";
 
 const client = new LatchClient({ url: "ws://localhost:8080/ws" });
 const conn = await client.connect();
@@ -180,9 +198,9 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 ```sh
 go build ./...
 go test ./...
-go test ./tests/integration/...
+go run ./cmd/cross-language-test
 ```
 
-The cross-language integration suite uses the generated clients with the
-available TypeScript, Dart, and Go toolchains. The complete working example is
-in [`examples/basic`](examples/basic).
+The cross-language runner uses the generated clients with the available
+TypeScript, Dart, and Go toolchains. The complete working example is in
+[`examples/chat_app`](examples/chat_app).

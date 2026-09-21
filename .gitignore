@@ -1,12 +1,12 @@
 # Go
 /*.test
 
-# TypeScript / Node (examples/basic/generated/typescript and any other
+# TypeScript / Node (examples/chat_app/typescript and any other
 # generated TS output a developer sets up locally)
 node_modules/
 dist/
 
-# Dart (examples/basic/generated/dart and any other generated Dart output)
+# Dart (examples/chat_app/dart and any other generated Dart output)
 .dart_tool/
 .packages
 build/
