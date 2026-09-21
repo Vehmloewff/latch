@@ -11,26 +11,26 @@ import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Thrown for every RPC rejection and connect failure.
-class LatchwireError extends Error {
+class LatchError extends Error {
   final String code;
   final String message;
 
-  LatchwireError(this.code, this.message);
+  LatchError(this.code, this.message);
 
   @override
-  String toString() => 'LatchwireError($code): $message';
+  String toString() => 'LatchError($code): $message';
 }
 
 /// Thrown when a value received from the server does not match a
 /// generated enum's known wire values. See docs/design-notes.md
 /// ("Dart unknown enum values").
-class LatchwireDecodeException implements Exception {
+class LatchDecodeException implements Exception {
   final String message;
 
-  LatchwireDecodeException(this.message);
+  LatchDecodeException(this.message);
 
   @override
-  String toString() => 'LatchwireDecodeException: $message';
+  String toString() => 'LatchDecodeException: $message';
 }
 
 class ClientOptions {
@@ -49,7 +49,7 @@ class HandshakeResult {
   HandshakeResult(this.channel, this.subscription, this.bufferedMessages);
 }
 
-/// Opens the WebSocket. Latchwire has no client handshake; the server runs
+/// Opens the WebSocket. Latch has no client handshake; the server runs
 /// OnConnect for the HTTP upgrade request.
 ///
 /// package:web_socket_channel's channel.stream is single-subscription, so
@@ -138,7 +138,7 @@ abstract class BaseConnection {
     TResp Function(dynamic raw) decode,
   ) {
     if (_closed) {
-      return Future<TResp>.error(LatchwireError('connection_closed', 'the connection is closed'));
+      return Future<TResp>.error(LatchError('connection_closed', 'the connection is closed'));
     }
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
@@ -167,21 +167,17 @@ abstract class BaseConnection {
       case 'error':
         final id = env['id'] as String?;
         final pending = id != null ? _pending.remove(id) : null;
-        final err = env['error'] as Map<String, dynamic>?;
-        pending?.completer.completeError(LatchwireError(
-          err?['code'] as String? ?? 'internal_error',
-          err?['message'] as String? ?? 'internal error',
-        ));
+        final message = env['error'] as String? ?? 'internal error';
+        final code = env['errorCode'] as String? ?? 'internal_error';
+        pending?.completer.completeError(LatchError(code, message));
         break;
       case 'event':
         dispatchEvent(env['payload']);
         break;
       case 'connection_error':
-        final err = env['error'] as Map<String, dynamic>?;
-        _failAllPending(LatchwireError(
-          err?['code'] as String? ?? 'internal_error',
-          err?['message'] as String? ?? 'connection error',
-        ));
+        final message = env['error'] as String? ?? 'connection error';
+        final code = env['errorCode'] as String? ?? 'internal_error';
+        _failAllPending(LatchError(code, message));
         _handleClose();
         break;
       default:
@@ -192,10 +188,10 @@ abstract class BaseConnection {
   void _handleClose() {
     if (_closed) return;
     _closed = true;
-    _failAllPending(LatchwireError('connection_closed', 'the connection is closed'));
+    _failAllPending(LatchError('connection_closed', 'the connection is closed'));
   }
 
-  void _failAllPending(LatchwireError err) {
+  void _failAllPending(LatchError err) {
     for (final pending in _pending.values) {
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(err);

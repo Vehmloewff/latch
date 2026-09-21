@@ -170,7 +170,7 @@ func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typ
 	fmt.Fprintf(&b, "package %s\n\n", pkg)
 	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n")
 
-	fmt.Fprintf(&b, "// %s is a Latchwire client. Construct one with New,\n", clientName)
+	fmt.Fprintf(&b, "// %s is a Latch client. Construct one with New,\n", clientName)
 	fmt.Fprintf(&b, "// then call Connect to obtain a %s.\n", connectedName)
 	fmt.Fprintf(&b, "type %s struct {\n\turl string\n}\n\n", clientName)
 	fmt.Fprintf(&b, "// New creates a %s targeting the given WebSocket URL.\n", clientName)

@@ -1,4 +1,4 @@
-# Latchwire v1 design notes
+# Latch v1 design notes
 
 This document records the explicit decisions the spec asked to be made and
 documented rather than left ambiguous (see "Questions to resolve during
@@ -34,7 +34,7 @@ TypeScript. The reasons:
   it to TS `number` is unsafe.
 - Mapping it to TS `string` instead would require the Go server to encode
   it as a JSON string on the wire, which diverges from `encoding/json`'s
-  normal behavior (a plain JSON number) — Latchwire does not support a
+  normal behavior (a plain JSON number) — Latch does not support a
   custom per-field wire-encoding policy in v1.
 - Because Go is the single source of truth reflected once into one IR
   shared by all three generators, a type must be either valid or invalid
@@ -48,7 +48,7 @@ field (e.g. for opaque IDs), or split the value.
 ## 2. Enum declaration convention
 
 Go has no source-level way to declare "the values of this named type,"
-and Latchwire does not parse Go source or comments. Enums are declared with
+and Latch does not parse Go source or comments. Enums are declared with
 an explicit struct-tag on (at least one) field that uses them:
 
 ```go
@@ -74,9 +74,9 @@ named string types).
 
 ## 3. Custom JSON marshalers
 
-Latchwire does not support arbitrary types implementing `json.Marshaler` or
+Latch does not support arbitrary types implementing `json.Marshaler` or
 `encoding.TextMarshaler` — their wire shape cannot be safely inferred by
-reflection and Latchwire has no per-type schema-override mechanism in v1.
+reflection and Latch has no per-type schema-override mechanism in v1.
 `time.Time` is the sole explicit exception: it is special-cased to the
 JSON Schema `{"type":"string","format":"date-time"}` and to `string` (with
 an RFC3339 documentation note) in every generated language, rather than a
@@ -87,12 +87,12 @@ semantics silently.
 
 `Options.OutboundQueueSize` bounds a per-connection channel. On overflow,
 `Conn.Send` (and every other outbound frame) returns an error **and**
-the connection is closed (`ClosePolicyViolation`). Latchwire never silently
+the connection is closed (`ClosePolicyViolation`). Latch never silently
 drops a typed frame to relieve backpressure.
 
 ## 5. Error code naming convention
 
-Wire error codes are `snake_case` strings. Latchwire reserves:
+Wire error codes are `snake_case` strings. Latch reserves:
 
 - `method_not_found`
 - `invalid_request`
@@ -101,7 +101,7 @@ Wire error codes are `snake_case` strings. Latchwire reserves:
 - `connect_rejected`
 - `duplicate_request_id`
 
-Applications are free to use any other code string via `latchwire.NewError`.
+Applications are free to use any other code string via `latch.NewError`.
 
 ## 6. OnConnect is optional
 
@@ -114,7 +114,7 @@ callback of either kind is a registration-time error.
 ## 7. Origin checking default
 
 With neither `Options.OriginPatterns` nor `Options.CheckOrigin` set,
-Latchwire relies on `github.com/coder/websocket`'s default behavior, which
+Latch relies on `github.com/coder/websocket`'s default behavior, which
 only allows same-origin connections (the request's `Origin` header must
 match the request host). `OriginPatterns` extends this the same way
 `websocket.AcceptOptions.OriginPatterns` does; `CheckOrigin` bypasses it
@@ -123,8 +123,8 @@ entirely with a caller-supplied predicate over the raw request.
 ## 8. Runtime/generated code split
 
 Section 25 of the spec describes a two-package split per language (a small
-`@latchwire/runtime`-style package plus a thin generated package per API).
-For v1, Latchwire generates **one self-contained output directory per
+`@latch/runtime`-style package plus a thin generated package per API).
+For v1, Latch generates **one self-contained output directory per
 language** that still separates runtime-shaped code (transport, request
 correlation, error types) into its own file(s) from protocol-specific
 generated code (DTOs, method/event trees, the client class) — but does not
@@ -168,7 +168,7 @@ distinction the way a hand-written serializer could fake in a dynamically
 typed language, and adding a wrapper type (`Option<T>`-style) for every
 optional field would make the generated API markedly less idiomatic. Per
 the spec's own allowance ("if implementing exact absent-vs-null distinction
-makes the Dart API excessively awkward, document the compromise"), Latchwire
+makes the Dart API excessively awkward, document the compromise"), Latch
 collapses **optional** (Go `,omitempty`) and **nullable** (Go pointer) into
 the same representation: a nullable Dart field (`T?`), where `null` means
 "absent OR explicitly null" — the two are indistinguishable from generated
@@ -193,8 +193,8 @@ This is implemented once, precisely, in `codegen/dart/types.go`
 ## 11. Dart unknown enum values
 
 Per spec section 23's two sanctioned options (throw, or preserve the raw
-value in an `unknown` case), Latchwire throws a typed
-`LatchwireDecodeException` from a generated enum's `fromJson` when the wire
+value in an `unknown` case), Latch throws a typed
+`LatchDecodeException` from a generated enum's `fromJson` when the wire
 value doesn't match any known case. The alternative — an `unknown` case
 carrying the raw string — isn't achievable with real Dart (enhanced) enums,
 whose instances are a fixed, const set; only a class-based union could carry
@@ -207,7 +207,7 @@ value. Never a bare/opaque cast: the exception is always a typed, catchable
 
 Dart has no single WebSocket API that works unmodified across the VM,
 Flutter, and web (unlike a global `WebSocket` in every JS-hosted
-environment). Latchwire's generated `pubspec.yaml` depends on
+environment). Latch's generated `pubspec.yaml` depends on
 `package:web_socket_channel` (the standard, actively maintained
 cross-platform WebSocket package used by the wider Dart/Flutter ecosystem)
 rather than reimplementing per-platform transport. `WebSocketChannel.stream`
@@ -254,7 +254,7 @@ adding a third, field-less example method — not anticipated up front.
 ## 17. TypeScript runtime/generated split
 
 Per §8, `runtime.ts` (transport, handshake, request correlation,
-`EventStream`, `LatchwireError`) and the generated `types.ts`/`client.ts`
+`EventStream`, `LatchError`) and the generated `types.ts`/`client.ts`
 are separate files in one output directory. `index.ts` re-exports the
 public surface. Method namespaces nest per dotted segment
 (`client.billing.invoice.get(...)`); event names are a single flat

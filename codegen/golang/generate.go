@@ -1,5 +1,5 @@
 // Package golang generates an idiomatic, standalone Go client from
-// Latchwire's protocol IR. Generated output never depends on the server
+// Latch's protocol IR. Generated output never depends on the server
 // implementation package, only on the small public runtime at
 // github.com/vehmloewff/latch/client. Every file is passed through
 // go/format before being returned, per spec section 50.
@@ -16,17 +16,17 @@ import (
 
 // Options configures Go client generation.
 type Options struct {
-	// Package is the generated package name. Defaults to "latchwireclient".
+	// Package is the generated package name. Defaults to "latchclient".
 	Package string
 
 	// ClientName is the base name for the generated types: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to "LatchwireClient".
+	// and "Connected<Name>Client". Defaults to "LatchClient".
 	ClientName string
 }
 
 func (o Options) resolve(_ *protocol.Protocol) Options {
 	out := o
-	base := "latchwire"
+	base := "latch"
 	if out.Package == "" {
 		out.Package = names.CamelCase(base) + "client"
 	}

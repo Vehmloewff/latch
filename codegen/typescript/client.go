@@ -40,7 +40,8 @@ func renderMethodNamespace(node *names.MethodNode, methods map[string]protocol.M
 		}
 		b.WriteString(",\n")
 	}
-	b.WriteString(indent + "}")
+	b.WriteString(indent)
+	b.WriteByte('}')
 	return b.String()
 }
 

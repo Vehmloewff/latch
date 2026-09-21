@@ -1,5 +1,5 @@
 // Package typescript generates a production-quality, strict-mode-clean
-// TypeScript client from Latchwire's protocol IR. Output is a
+// TypeScript client from Latch's protocol IR. Output is a
 // self-contained set of files (runtime.ts, types.ts, client.ts, index.ts):
 // see docs/design-notes.md ("Runtime/generated code split") for why the
 // runtime half is not yet its own npm package.
@@ -16,7 +16,7 @@ import (
 // Options configures TypeScript generation.
 type Options struct {
 	// ClientName is the base name for the generated classes: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to "LatchwireClient".
+	// and "Connected<Name>Client". Defaults to "LatchClient".
 	ClientName string
 }
 
@@ -24,7 +24,7 @@ func (o Options) clientName(_ *protocol.Protocol) string {
 	if o.ClientName != "" {
 		return o.ClientName
 	}
-	return "LatchwireClient"
+	return "LatchClient"
 }
 
 // Generate renders a complete TypeScript client from p, returning a map of
@@ -58,7 +58,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 
 func generateIndexFile(clientName string) string {
 	return fmt.Sprintf(
-		"export { %s, Connected%s } from \"./client\";\nexport { LatchwireError } from \"./runtime\";\nexport type { ClientOptions, WebSocketFactory, WebSocketLike } from \"./runtime\";\nexport * from \"./types\";\n",
+		"export { %s, Connected%s } from \"./client\";\nexport { LatchError } from \"./runtime\";\nexport type { ClientOptions, WebSocketFactory, WebSocketLike } from \"./runtime\";\nexport * from \"./types\";\n",
 		clientName, clientName,
 	)
 }

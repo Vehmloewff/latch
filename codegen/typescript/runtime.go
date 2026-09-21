@@ -6,7 +6,7 @@ package typescript
 // protocol, so it is emitted verbatim rather than templated.
 const runtimeBody = `export type WebSocketFactory = (url: string) => WebSocketLike;
 
-/** The minimal WebSocket surface Latchwire's runtime needs, satisfied by
+/** The minimal WebSocket surface Latch's runtime needs, satisfied by
  * both the browser's global WebSocket and Node/Bun/Deno implementations. */
 export interface WebSocketLike {
   readonly readyState: number;
@@ -19,10 +19,13 @@ export interface WebSocketLike {
 }
 
 /** Thrown for every RPC rejection and connect failure. */
-export class LatchwireError extends Error {
-  constructor(message: string) {
+export class LatchError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
     super(message);
-    this.name = "LatchwireError";
+    this.name = "LatchError";
+    this.code = code;
   }
 }
 
@@ -43,6 +46,7 @@ interface WireEnvelope {
   method?: string;
   payload?: unknown;
   error?: string;
+  errorCode?: string;
 }
 
 interface PendingRequest {
@@ -72,7 +76,7 @@ export class EventStream<T> {
   }
 }
 
-const connectionClosedError = () => new LatchwireError("the connection is closed");
+const connectionClosedError = () => new LatchError("connection_closed", "the connection is closed");
 
 /** Base class for every generated "Connected*Client". Handles the
  * WebSocket message loop, request/response correlation by ID, and
@@ -162,7 +166,7 @@ export abstract class BaseConnection {
         const p = env.id ? this.pending.get(env.id) : undefined;
         if (p && env.id) {
           this.pending.delete(env.id);
-          p.reject(new LatchwireError(env.error ?? "internal error"));
+          p.reject(new LatchError(env.errorCode ?? "internal_error", env.error ?? "internal error"));
         }
         break;
       }
@@ -170,7 +174,7 @@ export abstract class BaseConnection {
         this.dispatchEvent(env);
         break;
       case "connection_error":
-        this.failAllPending(new LatchwireError(env.error ?? "connection error"));
+        this.failAllPending(new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error"));
         this.handleClose();
         break;
       default:
@@ -196,7 +200,7 @@ function defaultWebSocketFactory(url: string): WebSocketLike {
   const g = globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike };
   if (!g.WebSocket) {
     throw new Error(
-      "Latchwire: no global WebSocket found; pass options.webSocketFactory (e.g. from the 'ws' package on Node)."
+      "Latch: no global WebSocket found; pass options.webSocketFactory (e.g. from the 'ws' package on Node)."
     );
   }
   return new g.WebSocket(url);
@@ -209,7 +213,7 @@ export interface HandshakeResult {
   bufferedMessages: string[];
 }
 
-/** Opens the WebSocket and resolves once it is open. Latchwire has no client
+/** Opens the WebSocket and resolves once it is open. Latch has no client
  * handshake; the server runs OnConnect for the HTTP upgrade request. */
 export function connectSocket(
   url: string,
@@ -233,13 +237,13 @@ export function connectSocket(
     ws.onerror = () => {
       if (settled) return;
       settled = true;
-      reject(new Error("Latchwire: WebSocket connection failed"));
+      reject(new Error("Latch: WebSocket connection failed"));
     };
 
     ws.onclose = () => {
       if (settled) return;
       settled = true;
-      reject(new Error("Latchwire: connection closed before setup completed"));
+      reject(new Error("Latch: connection closed before setup completed"));
     };
 
     ws.onmessage = (ev) => {
@@ -257,14 +261,14 @@ export function connectSocket(
       } catch {
         settled = true;
         ws.close(1002, "malformed event before setup");
-        reject(new Error("Latchwire: malformed response during setup"));
+        reject(new Error("Latch: malformed response during setup"));
         return;
       }
 
       if (env.type === "connection_error") {
         settled = true;
         ws.close();
-        reject(new LatchwireError(env.error ?? "connection rejected"));
+        reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
       }
     };
   });

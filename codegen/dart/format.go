@@ -7,7 +7,7 @@ import "os/exec"
 // SDK constraint and applies the same style a consumer running `dart
 // format` themselves would see — running it stdin-to-stdout without that
 // package context can pick a different formatting style. It only formats
-// "lib", the directory Latchwire actually generates into, so a hand-written
+// "lib", the directory Latch actually generates into, so a hand-written
 // file elsewhere in the package (e.g. under test/) is never touched. If the
 // dart binary isn't on PATH, or formatting fails for any reason, this is a
 // no-op: generated output is always valid Dart either way, and formatting

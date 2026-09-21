@@ -1,5 +1,5 @@
 // Package dart generates an idiomatic, null-safe Dart client from
-// Latchwire's protocol IR. Output is a small, ready-to-use Dart package:
+// Latch's protocol IR. Output is a small, ready-to-use Dart package:
 // pubspec.yaml, a public barrel file (lib/<package>.dart), and the
 // implementation under lib/src/ (runtime.dart, models.dart, client.dart).
 // See docs/design-notes.md ("Runtime/generated code split", "Dart optional
@@ -18,11 +18,11 @@ import (
 // Options configures Dart generation.
 type Options struct {
 	// Package is the pubspec package name and the name of the public
-	// barrel file (lib/<Package>.dart). Defaults to "latchwire_client".
+	// barrel file (lib/<Package>.dart). Defaults to "latch_client".
 	Package string
 
 	// ClientName is the base name for the generated classes: "<Name>Client"
-	// and "Connected<Name>Client". Defaults to "LatchwireClient".
+	// and "Connected<Name>Client". Defaults to "LatchClient".
 	ClientName string
 
 	// WebSocketChannelVersion pins the package:web_socket_channel version
@@ -33,10 +33,10 @@ type Options struct {
 func (o Options) resolve(_ *protocol.Protocol) Options {
 	out := o
 	if out.Package == "" {
-		out.Package = "latchwire_client"
+		out.Package = "latch_client"
 	}
 	if out.ClientName == "" {
-		out.ClientName = "LatchwireClient"
+		out.ClientName = "LatchClient"
 	}
 	if out.WebSocketChannelVersion == "" {
 		out.WebSocketChannelVersion = "^3.0.0"
@@ -77,7 +77,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 
 func generatePubspec(opts Options) string {
 	return fmt.Sprintf(`name: %s
-description: Generated Latchwire client. DO NOT EDIT.
+description: Generated Latch client. DO NOT EDIT.
 publish_to: "none"
 version: 0.1.0
 
@@ -96,7 +96,7 @@ func generateBarrelFile(clientName string) string {
 	return fmt.Sprintf(
 		"export 'src/client.dart' show %s, Connected%s;\n"+
 			"export 'src/models.dart';\n"+
-			"export 'src/runtime.dart' show ClientOptions, LatchwireError, LatchwireDecodeException;\n",
+			"export 'src/runtime.dart' show ClientOptions, LatchError, LatchDecodeException;\n",
 		clientName, clientName,
 	)
 }

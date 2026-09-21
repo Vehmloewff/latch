@@ -1,10 +1,10 @@
-// Package latchwire is a Go-first, strongly typed, bidirectional protocol
+// Package latch is a Go-first, strongly typed, bidirectional protocol
 // framework over WebSockets. A developer registers Go handler functions and
-// event definitions on a Server; Latchwire reflects over those registrations
+// event definitions on a Server; Latch reflects over those registrations
 // to validate connections and requests against generated JSON Schema, and to
 // generate fully type-safe TypeScript, Dart, and Go clients. See the
 // package README for the complete walkthrough.
-package latchwire
+package latch
 
 import (
 	"context"
@@ -93,7 +93,7 @@ func (o *Options) withDefaults() Options {
 	return out
 }
 
-// Server is a configured Latchwire API. Its one server-to-client event type
+// Server is a configured Latch API. Its one server-to-client event type
 // is inferred from the generic Emitter supplied to OnConnect.
 // Construct one with New, register methods, optionally set OnConnect, then
 // either serve it (ServeHTTP) or generate clients from it with one of the
@@ -154,19 +154,19 @@ func (s *Server[S]) Register(name string, handler any) {
 	defer s.mu.Unlock()
 
 	if s.finalized {
-		panic(fmt.Errorf("latchwire: cannot register method %q: server is already finalized", name))
+		panic(fmt.Errorf("latch: cannot register method %q: server is already finalized", name))
 	}
 	if !names.IsSnakeCase(name) {
-		panic(fmt.Errorf("latchwire: method name %q must be snake_case", name))
+		panic(fmt.Errorf("latch: method name %q must be snake_case", name))
 	}
 	if _, exists := s.methods[name]; exists {
-		panic(fmt.Errorf("latchwire: method %q is already registered", name))
+		panic(fmt.Errorf("latch: method %q is already registered", name))
 	}
 
 	wantStateType := reflect.TypeOf((*S)(nil)).Elem()
 	adapter, err := reflectapi.ValidateStateHandler(handler, wantStateType)
 	if err != nil {
-		panic(fmt.Errorf("latchwire: register method %q: %w", name, err))
+		panic(fmt.Errorf("latch: register method %q: %w", name, err))
 	}
 
 	s.methods[name] = &methodEntry{name: name, adapter: adapter}
@@ -188,10 +188,10 @@ func (s *Server[S]) OnConnect(fn any) {
 	defer s.mu.Unlock()
 
 	if s.finalized {
-		panic(fmt.Errorf("latchwire: cannot register OnConnect: server is already finalized"))
+		panic(fmt.Errorf("latch: cannot register OnConnect: server is already finalized"))
 	}
 	if s.onConnect != nil {
-		panic(fmt.Errorf("latchwire: OnConnect has already been registered"))
+		panic(fmt.Errorf("latch: OnConnect has already been registered"))
 	}
 	adapted, eventType, emitter, err := adaptOnConnect[S](fn)
 	if err != nil {
@@ -213,10 +213,10 @@ func (s *Server[S]) OnDisconnect(fn any) {
 	defer s.mu.Unlock()
 
 	if s.finalized {
-		panic(fmt.Errorf("latchwire: cannot register OnDisconnect: server is already finalized"))
+		panic(fmt.Errorf("latch: cannot register OnDisconnect: server is already finalized"))
 	}
 	if s.onDisconnect != nil {
-		panic(fmt.Errorf("latchwire: OnDisconnect has already been registered"))
+		panic(fmt.Errorf("latch: OnDisconnect has already been registered"))
 	}
 	adapted, err := adaptOnDisconnect[S](fn)
 	if err != nil {
@@ -227,7 +227,7 @@ func (s *Server[S]) OnDisconnect(fn any) {
 
 func adaptOnDisconnect[S any](fn any) (func(context.Context, any), error) {
 	if fn == nil {
-		return nil, fmt.Errorf("latchwire: OnDisconnect handler must not be nil")
+		return nil, fmt.Errorf("latch: OnDisconnect handler must not be nil")
 	}
 	v := reflect.ValueOf(fn)
 	t := v.Type()
@@ -239,7 +239,7 @@ func adaptOnDisconnect[S any](fn any) (func(context.Context, any), error) {
 		(t.NumIn() == 2 && t.In(0) != ctxType) ||
 		t.In(t.NumIn()-1) != stateType ||
 		(t.NumOut() != 0 && (t.NumOut() != 1 || t.Out(0) != errorType)) {
-		return nil, fmt.Errorf("latchwire: OnDisconnect handler must accept State, optionally preceded by context.Context")
+		return nil, fmt.Errorf("latch: OnDisconnect handler must accept State, optionally preceded by context.Context")
 	}
 	return func(ctx context.Context, state any) {
 		stateVal := reflect.ValueOf(state)
@@ -260,7 +260,7 @@ func adaptOnDisconnect[S any](fn any) (func(context.Context, any), error) {
 
 func adaptOnConnect[S any](fn any) (func(context.Context, any, *Conn) (any, error), reflect.Type, emitterRegistration, error) {
 	if fn == nil {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must not be nil")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler must not be nil")
 	}
 	v := reflect.ValueOf(fn)
 	t := v.Type()
@@ -270,22 +270,22 @@ func adaptOnConnect[S any](fn any) (func(context.Context, any, *Conn) (any, erro
 		(t.NumOut() != 1 && t.NumOut() != 2) ||
 		t.Out(0) != stateType ||
 		(t.NumOut() == 2 && t.Out(1) != errorType) {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must return S or (S, error)")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler must return S or (S, error)")
 	}
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
 	connType := reflect.TypeOf((*Conn)(nil))
 	if t.NumIn() != 3 {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler must accept context.Context, Emitter[E], and *Conn")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler must accept context.Context, Emitter[E], and *Conn")
 	}
 	if t.In(0) != ctxType {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's first argument must be context.Context")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler's first argument must be context.Context")
 	}
 	if t.In(2) != connType {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's third argument must be *Conn")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler's third argument must be *Conn")
 	}
 	prototype, ok := reflect.New(t.In(1)).Elem().Interface().(emitterRegistration)
 	if !ok {
-		return nil, nil, nil, fmt.Errorf("latchwire: OnConnect handler's second argument must be Emitter[E]")
+		return nil, nil, nil, fmt.Errorf("latch: OnConnect handler's second argument must be Emitter[E]")
 	}
 	return func(ctx context.Context, emitter any, conn *Conn) (any, error) {
 		outs := v.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(emitter), reflect.ValueOf(conn)})
@@ -315,15 +315,15 @@ func (s *Server[S]) finalize() error {
 
 func (s *Server[S]) finalizeLocked() error {
 	if s.eventType == nil {
-		return fmt.Errorf("latchwire: event type must be a concrete struct type")
+		return fmt.Errorf("latch: event type must be a concrete struct type")
 	}
 
 	eventRef, err := s.registry.Resolve(s.eventType)
 	if err != nil {
-		return fmt.Errorf("latchwire: event type: %w", err)
+		return fmt.Errorf("latch: event type: %w", err)
 	}
 	if eventRef.Kind != protocol.KindStruct {
-		return fmt.Errorf("latchwire: event type %s must be a struct", s.eventType)
+		return fmt.Errorf("latch: event type %s must be a struct", s.eventType)
 	}
 	s.eventRef = eventRef
 
@@ -336,11 +336,11 @@ func (s *Server[S]) finalizeLocked() error {
 
 		reqRef, err := s.registry.Resolve(m.adapter.RequestType)
 		if err != nil {
-			return fmt.Errorf("latchwire: method %q request type: %w", name, err)
+			return fmt.Errorf("latch: method %q request type: %w", name, err)
 		}
 		respRef, err := s.registry.Resolve(m.adapter.ResponseType)
 		if err != nil {
-			return fmt.Errorf("latchwire: method %q response type: %w", name, err)
+			return fmt.Errorf("latch: method %q response type: %w", name, err)
 		}
 		m.requestRef = reqRef
 		m.responseRef = respRef
@@ -358,9 +358,9 @@ func (s *Server[S]) finalizeLocked() error {
 		return err
 	}
 	eventDoc := jsonschema.BuildDocument(s.ir, eventRef)
-	eventVal, err := jsonschema.Compile("latchwire://event", eventDoc)
+	eventVal, err := jsonschema.Compile("latch://event", eventDoc)
 	if err != nil {
-		return fmt.Errorf("latchwire: compile event schema: %w", err)
+		return fmt.Errorf("latch: compile event schema: %w", err)
 	}
 	s.eventVal = eventVal
 
@@ -368,17 +368,17 @@ func (s *Server[S]) finalizeLocked() error {
 		m := s.methods[name]
 
 		reqDoc := jsonschema.BuildDocument(s.ir, m.requestRef)
-		reqVal, err := jsonschema.Compile("latchwire://method/"+name+"/request", reqDoc)
+		reqVal, err := jsonschema.Compile("latch://method/"+name+"/request", reqDoc)
 		if err != nil {
-			return fmt.Errorf("latchwire: compile method %q request schema: %w", name, err)
+			return fmt.Errorf("latch: compile method %q request schema: %w", name, err)
 		}
 		m.requestValidator = reqVal
 
 		if s.opts.ValidateResponses {
 			respDoc := jsonschema.BuildDocument(s.ir, m.responseRef)
-			respVal, err := jsonschema.Compile("latchwire://method/"+name+"/response", respDoc)
+			respVal, err := jsonschema.Compile("latch://method/"+name+"/response", respDoc)
 			if err != nil {
-				return fmt.Errorf("latchwire: compile method %q response schema: %w", name, err)
+				return fmt.Errorf("latch: compile method %q response schema: %w", name, err)
 			}
 			m.responseValidator = respVal
 		}
@@ -419,7 +419,7 @@ func (s *Server[S]) untrack(c *Conn) {
 func (s *Server[S]) callOnDisconnect(ctx context.Context, state any) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logf(ctx, slog.LevelError, "latchwire: OnDisconnect panicked", "panic", r)
+			s.logf(ctx, slog.LevelError, "latch: OnDisconnect panicked", "panic", r)
 		}
 	}()
 	s.onDisconnect(ctx, state)

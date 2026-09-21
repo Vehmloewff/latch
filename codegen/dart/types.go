@@ -170,7 +170,7 @@ func generateModelsFile(p *protocol.Protocol, typeNames map[string]string) strin
 		}
 	}
 	if hasEnum {
-		b.WriteString("import 'runtime.dart' show LatchwireDecodeException;\n\n")
+		b.WriteString("import 'runtime.dart' show LatchDecodeException;\n\n")
 	}
 
 	for _, t := range sortedNamedTypes(p.Types, typeNames) {
@@ -191,7 +191,7 @@ func generateModelsFile(p *protocol.Protocol, typeNames map[string]string) strin
 			fmt.Fprintf(&b, "    for (final v in %s.values) {\n", name)
 			b.WriteString("      if (v.wireValue == value) return v;\n")
 			b.WriteString("    }\n")
-			fmt.Fprintf(&b, "    throw LatchwireDecodeException('unknown %s value: ' + value);\n", name)
+			fmt.Fprintf(&b, "    throw LatchDecodeException('unknown %s value: ' + value);\n", name)
 			b.WriteString("  }\n\n")
 			b.WriteString("  String toJson() => wireValue;\n")
 			b.WriteString("}\n\n")

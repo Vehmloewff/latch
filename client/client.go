@@ -1,4 +1,4 @@
-// Package client is Latchwire's Go client runtime: WebSocket transport,
+// Package client is Latch's Go client runtime: WebSocket transport,
 // request/response correlation, and event dispatch.
 // Every generated Go client (see codegen/golang) imports this package
 // rather than reimplementing transport logic itself; generated code
@@ -19,12 +19,12 @@ import (
 )
 
 // eventBufferSize bounds the per-event channel returned by RegisterEvent.
-// Latchwire events are best-effort (see docs/design-notes.md): once the
+// Latch events are best-effort (see docs/design-notes.md): once the
 // buffer is full, further events for that stream are dropped rather than
 // blocking the connection's single read goroutine.
 const eventBufferSize = 64
 
-// Error is Latchwire's structured application/protocol error, matching the
+// Error is Latch's structured application/protocol error, matching the
 // wire error envelope's {code, message} shape.
 type Error struct {
 	Code    string
@@ -40,7 +40,7 @@ type pendingResult struct {
 	err     *Error
 }
 
-// Conn is a live Latchwire connection. Generated code never constructs one
+// Conn is a live Latch connection. Generated code never constructs one
 // directly: Connect dials the WebSocket and returns a Conn whose
 // message loop has not yet started, so generated code can register the event
 // stream before any frame can
@@ -72,11 +72,11 @@ type Conn struct {
 func Connect(ctx context.Context, rawURL, version string) (*Conn, error) {
 	target, err := addVersionQuery(rawURL, version)
 	if err != nil {
-		return nil, fmt.Errorf("latchwire: build connection URL: %w", err)
+		return nil, fmt.Errorf("latch: build connection URL: %w", err)
 	}
 	ws, _, err := websocket.Dial(ctx, target, nil)
 	if err != nil {
-		return nil, fmt.Errorf("latchwire: dial: %w", err)
+		return nil, fmt.Errorf("latch: dial: %w", err)
 	}
 	return &Conn{
 		ws:            ws,
@@ -135,21 +135,24 @@ func (c *Conn) readLoop() {
 		case wire.FrameResponse:
 			c.deliver(env.ID, env.Payload, nil)
 		case wire.FrameError:
-			c.deliver(env.ID, nil, wireErrToError(env.Error, "internal_error", "internal error"))
+			c.deliver(env.ID, nil, wireErrToError(env.ErrorCode, env.Error, "internal_error", "internal error"))
 		case wire.FrameEvent:
 			c.dispatchEvent(env.Payload)
 		case wire.FrameConnectionError:
-			c.failAll(wireErrToError(env.Error, "internal_error", "connection error"))
+			c.failAll(wireErrToError(env.ErrorCode, env.Error, "internal_error", "connection error"))
 			return
 		}
 	}
 }
 
-func wireErrToError(message, defaultCode, defaultMessage string) *Error {
+func wireErrToError(code, message, defaultCode, defaultMessage string) *Error {
+	if code == "" {
+		code = defaultCode
+	}
 	if message == "" {
 		message = defaultMessage
 	}
-	return &Error{Code: defaultCode, Message: message}
+	return &Error{Code: code, Message: message}
 }
 
 func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {
@@ -212,7 +215,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 
 	raw, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("latchwire: marshal request: %w", err)
+		return nil, fmt.Errorf("latch: marshal request: %w", err)
 	}
 
 	id := fmt.Sprintf("%d", c.nextID.Add(1))
@@ -227,7 +230,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return nil, fmt.Errorf("latchwire: marshal request frame: %w", err)
+		return nil, fmt.Errorf("latch: marshal request frame: %w", err)
 	}
 
 	c.writeMu.Lock()
@@ -237,7 +240,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return nil, fmt.Errorf("latchwire: write request: %w", writeErr)
+		return nil, fmt.Errorf("latch: write request: %w", writeErr)
 	}
 
 	select {
@@ -268,7 +271,7 @@ func Call[TResp any](ctx context.Context, conn *Conn, method string, req any) (T
 	}
 	var resp TResp
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return zero, fmt.Errorf("latchwire: decode response for %q: %w", method, err)
+		return zero, fmt.Errorf("latch: decode response for %q: %w", method, err)
 	}
 	return resp, nil
 }

@@ -1,4 +1,4 @@
-// Package protocol defines Latchwire's normalized intermediate representation
+// Package protocol defines Latch's normalized intermediate representation
 // (IR) of a registered API. Exactly one stage (package reflectapi) converts
 // Go reflection into this IR. Every downstream consumer — JSON Schema
 // generation, runtime validation, the manifest, and the TypeScript/Dart/Go
@@ -118,7 +118,7 @@ type Method struct {
 	ResponseType TypeRef
 }
 
-// Protocol is the complete normalized representation of a Latchwire API,
+// Protocol is the complete normalized representation of a Latch API,
 // ready to drive JSON Schema generation, runtime validation, the manifest,
 // and every language code generator.
 type Protocol struct {

@@ -1,11 +1,11 @@
-# Latchwire
+# Latch
 
-Latchwire turns a Go-defined WebSocket API into type-safe clients for Go,
+Latch turns a Go-defined WebSocket API into type-safe clients for Go,
 TypeScript, and Dart.
 
 Define your request, response, event, and connection-state types in Go. Register
 handlers on a `Server`, serve it as an `http.Handler`, and generate clients from
-the same server definition. Latchwire handles protocol reflection, runtime
+the same server definition. Latch handles protocol reflection, runtime
 validation, and client code generation without a separate schema file.
 
 ## Features
@@ -49,15 +49,15 @@ type Event struct {
     Kind string `json:"kind"`
 }
 
-func buildAPI() *latchwire.Server[State] {
-    server := latchwire.New[State](latchwire.Options{
+func buildAPI() *latch.Server[State] {
+    server := latch.New[State](latch.Options{
         ProtocolVersion: "1",
     })
 
     server.OnConnect(func(
         ctx context.Context,
-        events latchwire.Emitter[Event],
-        conn *latchwire.Conn,
+        events latch.Emitter[Event],
+        conn *latch.Conn,
     ) (State, error) {
         return State{}, nil
     })
@@ -92,22 +92,22 @@ server schema once and pass it to the selected code generator:
 func main() {
     server := buildAPI()
 
-    if err := server.GenerateTypeScript(latchwire.TypeScriptOptions{
+    if err := server.GenerateTypeScript(latch.TypeScriptOptions{
         OutputDir: "./generated/typescript",
     }); err != nil {
         log.Fatal(err)
     }
 
-    if err := server.GenerateDart(latchwire.DartOptions{
+    if err := server.GenerateDart(latch.DartOptions{
         OutputDir: "./generated/dart",
-        Package:   "latchwire_client",
+        Package:   "latch_client",
     }); err != nil {
         log.Fatal(err)
     }
 
-    if err := server.GenerateGo(latchwire.GoOptions{
+    if err := server.GenerateGo(latch.GoOptions{
         OutputDir: "./generated/go",
-        Package:   "latchwireclient",
+        Package:   "latchclient",
     }); err != nil {
         log.Fatal(err)
     }
@@ -121,9 +121,9 @@ Use `GenerateSchema` when integrating the normalized schema with custom tooling.
 TypeScript:
 
 ```ts
-import { LatchwireClient } from "./generated/typescript";
+import { LatchClient } from "./generated/typescript";
 
-const client = new LatchwireClient({ url: "ws://localhost:8080/ws" });
+const client = new LatchClient({ url: "ws://localhost:8080/ws" });
 const conn = await client.connect();
 const result = await conn.mathAdd({ a: 1, b: 2 });
 
@@ -133,7 +133,7 @@ result.result; // number
 Dart:
 
 ```dart
-final client = LatchwireClient(
+final client = LatchClient(
   ClientOptions(Uri.parse('ws://localhost:8080/ws')),
 );
 final conn = await client.connect();
@@ -145,13 +145,13 @@ print(result.result);
 Go:
 
 ```go
-client := latchwireclient.New("ws://localhost:8080/ws")
+client := latchclient.New("ws://localhost:8080/ws")
 conn, err := client.Connect(ctx)
 if err != nil {
     log.Fatal(err)
 }
 
-result, err := conn.MathAdd(ctx, latchwireclient.AddRequest{A: 1, B: 2})
+result, err := conn.MathAdd(ctx, latchclient.AddRequest{A: 1, B: 2})
 if err != nil {
     log.Fatal(err)
 }
@@ -166,7 +166,7 @@ needs to manually cast responses or maintain a second copy of the protocol.
 
 ## Supported types
 
-Latchwire supports named exported structs, strings, booleans, signed and
+Latch supports named exported structs, strings, booleans, signed and
 unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `map[string]V`, pointers, `time.Time`, and named string enums declared with a
 `jsonschema_enum:"a,b,c"` tag.

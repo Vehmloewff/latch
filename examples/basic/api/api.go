@@ -6,13 +6,13 @@
 // drift apart. It deliberately covers every shape spec section 49 asks the
 // cross-language integration suite to exercise: nested types, nullable and
 // optional fields, two events, an application error, and (by virtue of
-// Latchwire's own concurrency support) concurrent calls.
+// Latch's own concurrency support) concurrent calls.
 package api
 
 import (
 	"context"
 
-	latchwire "github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch"
 )
 
 // SubscribeRequest is the payload for the "room.subscribe" method.
@@ -90,12 +90,12 @@ type State struct {
 // Build constructs a fresh, fully registered Server. It is the one place
 // the "basic" protocol is defined; generated clients and the live server
 // are both produced by reflecting over exactly this registration.
-func Build() *latchwire.Server[State] {
-	lw := latchwire.New[State](latchwire.Options{
+func Build() *latch.Server[State] {
+	lw := latch.New[State](latch.Options{
 		ProtocolVersion: "1",
 	})
 
-	lw.OnConnect(func(ctx context.Context, emitter latchwire.Emitter[Event], conn *latchwire.Conn) (State, error) {
+	lw.OnConnect(func(ctx context.Context, emitter latch.Emitter[Event], conn *latch.Conn) (State, error) {
 		if err := emitter.Send(Event{
 			Kind: "message",
 			Message: &MessageReceived{
@@ -135,7 +135,7 @@ func Build() *latchwire.Server[State] {
 
 	lw.Register("profile_get", func(ctx context.Context, state State, req ProfileGetRequest) (ProfileGetResponse, error) {
 		if req.UserID == "missing" {
-			return ProfileGetResponse{}, latchwire.NewError("not_found", "user not found")
+			return ProfileGetResponse{}, latch.NewError("not_found", "user not found")
 		}
 
 		nickname := "the " + req.UserID

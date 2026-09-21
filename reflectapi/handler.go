@@ -11,7 +11,7 @@ var (
 	errType = reflect.TypeOf((*error)(nil)).Elem()
 )
 
-// HandlerAdapter wraps a validated Latchwire method handler so callers can
+// HandlerAdapter wraps a validated Latch method handler so callers can
 // invoke it generically without knowing the concrete request/response types
 // at compile time.
 type HandlerAdapter struct {
@@ -21,7 +21,7 @@ type HandlerAdapter struct {
 	fn reflect.Value
 }
 
-// ValidateStateHandler checks that handler has the single canonical Latchwire
+// ValidateStateHandler checks that handler has the single canonical Latch
 // method signature:
 //
 //	func(context.Context, State, Request) (Response, error)
@@ -45,7 +45,7 @@ func ValidateStateHandler(handler any, stateType reflect.Type) (*HandlerAdapter,
 	}
 	if ht.NumIn() != 3 {
 		return nil, fmt.Errorf(
-			"handler must accept exactly 3 arguments (context.Context, *latchwire.Conn, Request), got %d",
+			"handler must accept exactly 3 arguments (context.Context, *latch.Conn, Request), got %d",
 			ht.NumIn(),
 		)
 	}

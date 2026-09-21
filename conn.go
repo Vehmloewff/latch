@@ -1,4 +1,4 @@
-package latchwire
+package latch
 
 import (
 	"context"
@@ -35,7 +35,7 @@ type outboundFrame struct {
 	env wire.Envelope
 }
 
-// Conn is a single, live, type-safe Latchwire connection. E is the server's
+// Conn is a single, live, type-safe Latch connection. E is the server's
 // one outbound event payload type.
 type Conn struct {
 	server connServer
@@ -131,7 +131,7 @@ func (c *Conn) OnClose(fn func()) {
 func (c *Conn) runOnCloseFn(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.logf(slog.LevelError, "latchwire: OnClose callback panicked", "panic", r)
+			c.logf(slog.LevelError, "latch: OnClose callback panicked", "panic", r)
 		}
 	}()
 	fn()
@@ -150,7 +150,7 @@ func (c *Conn) Close(code CloseCode, reason string) error {
 		// Let the writer pump finish draining any already-queued frames
 		// (e.g. a connection_error or the final response) before we send
 		// the WebSocket close frame, so a client never sees the close race
-		// ahead of a frame Latchwire already committed to sending.
+		// ahead of a frame Latch already committed to sending.
 		select {
 		case <-c.pumpDone:
 		case <-time.After(2 * time.Second):
@@ -177,19 +177,19 @@ func (c *Conn) Close(code CloseCode, reason string) error {
 func (c *Conn) sendEventFrame(payload any) error {
 	select {
 	case <-c.closed:
-		return fmt.Errorf("latchwire: cannot send event: connection is closed")
+		return fmt.Errorf("latch: cannot send event: connection is closed")
 	default:
 	}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("latchwire: marshal event payload: %w", err)
+		return fmt.Errorf("latch: marshal event payload: %w", err)
 	}
 
 	if c.server.options().ValidateResponses {
 		if v := c.server.eventValidator(); v != nil {
 			if err := v.ValidateJSON(raw); err != nil {
-				return fmt.Errorf("latchwire: event payload failed schema validation: %w", err)
+				return fmt.Errorf("latch: event payload failed schema validation: %w", err)
 			}
 		}
 	}
@@ -201,7 +201,7 @@ func (c *Conn) sendEventFrame(payload any) error {
 }
 
 // enqueue pushes env onto the bounded outbound queue without blocking. On
-// overflow, per Latchwire's backpressure policy, it terminates the
+// overflow, per Latch's backpressure policy, it terminates the
 // connection rather than silently dropping a typed frame. Used both for
 // buffered/live event sends and for server-dispatch frames (responses,
 // request errors, the connection_error frame).
@@ -211,7 +211,7 @@ func (c *Conn) enqueue(env wire.Envelope) error {
 		return nil
 	default:
 		go c.Close(ClosePolicyViolation, "outbound queue overflow")
-		return fmt.Errorf("latchwire: outbound queue overflow; closing connection")
+		return fmt.Errorf("latch: outbound queue overflow; closing connection")
 	}
 }
 
@@ -224,7 +224,7 @@ func (c *Conn) writePump() {
 		select {
 		case f := <-c.outbound:
 			if err := c.writeEnvelope(f.env); err != nil {
-				c.logf(slog.LevelWarn, "latchwire: write failed, closing connection", "error", err)
+				c.logf(slog.LevelWarn, "latch: write failed, closing connection", "error", err)
 				go c.Close(CloseInternalError, "write error")
 				return
 			}
@@ -235,7 +235,7 @@ func (c *Conn) writePump() {
 		select {
 		case f := <-c.outbound:
 			if err := c.writeEnvelope(f.env); err != nil {
-				c.logf(slog.LevelWarn, "latchwire: write failed, closing connection", "error", err)
+				c.logf(slog.LevelWarn, "latch: write failed, closing connection", "error", err)
 				go c.Close(CloseInternalError, "write error")
 				return
 			}

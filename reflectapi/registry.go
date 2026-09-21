@@ -1,7 +1,7 @@
-// Package reflectapi is the single reflection stage of Latchwire. It walks
+// Package reflectapi is the single reflection stage of Latch. It walks
 // Go reflect.Type values reachable from the event payload and method
 // requests/responses, and produces the normalized
-// protocol.Protocol IR. No other package in Latchwire inspects reflect.Type
+// protocol.Protocol IR. No other package in Latch inspects reflect.Type
 // directly.
 package reflectapi
 
@@ -65,7 +65,7 @@ func (r *Registry) resolve(t reflect.Type, visiting map[reflect.Type]bool) (prot
 
 	case t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler):
 		return protocol.TypeRef{}, fmt.Errorf(
-			"type %s implements json.Marshaler; Latchwire v1 cannot infer its wire shape (unsupported custom marshaler)",
+			"type %s implements json.Marshaler; Latch v1 cannot infer its wire shape (unsupported custom marshaler)",
 			t.String(),
 		)
 	}
@@ -89,8 +89,8 @@ func (r *Registry) resolve(t reflect.Type, visiting map[reflect.Type]bool) (prot
 		return protocol.TypeRef{Kind: protocol.KindInt32}, nil
 	case reflect.Int64:
 		return protocol.TypeRef{}, fmt.Errorf(
-			"unsupported type %s: int64 fields are rejected in Latchwire v1 because they cannot be represented "+
-				"safely as a JavaScript number and Latchwire does not yet support a custom wire-encoding policy; "+
+			"unsupported type %s: int64 fields are rejected in Latch v1 because they cannot be represented "+
+				"safely as a JavaScript number and Latch does not yet support a custom wire-encoding policy; "+
 				"use int32 (or a string) instead",
 			t.String(),
 		)
@@ -104,8 +104,8 @@ func (r *Registry) resolve(t reflect.Type, visiting map[reflect.Type]bool) (prot
 		return protocol.TypeRef{Kind: protocol.KindUint32}, nil
 	case reflect.Uint64:
 		return protocol.TypeRef{}, fmt.Errorf(
-			"unsupported type %s: uint64 fields are rejected in Latchwire v1 because they cannot be represented "+
-				"safely as a JavaScript number and Latchwire does not yet support a custom wire-encoding policy; "+
+			"unsupported type %s: uint64 fields are rejected in Latch v1 because they cannot be represented "+
+				"safely as a JavaScript number and Latch does not yet support a custom wire-encoding policy; "+
 				"use uint32 (or a string) instead",
 			t.String(),
 		)
@@ -188,7 +188,7 @@ func (r *Registry) resolveNamedString(t reflect.Type) (protocol.TypeRef, error) 
 }
 
 // DeclareEnum registers the allowed values for a named string type. It must
-// be called (via the public latchwire.Enum tag mechanism, see field.go)
+// be called (via the public latch.Enum tag mechanism, see field.go)
 // before that type is resolved for the first time.
 func (r *Registry) declareEnum(t reflect.Type, values []string) error {
 	if existing, ok := r.enumValues[t]; ok {
@@ -254,7 +254,7 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 
 		if sf.Anonymous {
 			return protocol.TypeRef{}, fmt.Errorf(
-				"struct %s: embedded field %s is not supported in Latchwire v1; use a named field instead",
+				"struct %s: embedded field %s is not supported in Latch v1; use a named field instead",
 				t.String(), sf.Name,
 			)
 		}

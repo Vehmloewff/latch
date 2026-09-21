@@ -32,7 +32,7 @@ func AssignTypeNames(types []*protocol.NamedType) (map[string]string, error) {
 			candidate := PascalCase(lastPathSegment(t.GoPkgPath)) + goName
 			if owner, dup := used[candidate]; dup {
 				return nil, fmt.Errorf(
-					"latchwire: type name collision: %q and %q both generate the name %q; rename one of the Go types",
+					"latch: type name collision: %q and %q both generate the name %q; rename one of the Go types",
 					owner, t.ID, candidate,
 				)
 			}
@@ -89,14 +89,14 @@ func BuildMethodTree(methodNames []string) (*MethodNode, error) {
 			}
 			if child.IsLeaf && !last {
 				return nil, fmt.Errorf(
-					"latchwire: method name %q cannot be used as a namespace because %q is already a registered method",
+					"latch: method name %q cannot be used as a namespace because %q is already a registered method",
 					full, child.FullName,
 				)
 			}
 			if last {
 				if len(child.Children) > 0 {
 					return nil, fmt.Errorf(
-						"latchwire: method name %q collides with a namespace already used by other methods (e.g. %q)",
+						"latch: method name %q collides with a namespace already used by other methods (e.g. %q)",
 						full, full+"."+child.ChildOrder[0],
 					)
 				}

@@ -8,8 +8,11 @@
 // here would stop finding an error and the test would fail.
 import 'package:basic_client/basic_client.dart';
 
-Future<void> shouldFailToAnalyze(LatchwireClient client) async {
+Future<void> shouldFailToAnalyze(LatchClient client) async {
   final conn = await client.connect();
+
+  // Missing required argument.
+  await conn.roomSubscribe(SubscribeRequest());
 
   // Wrong argument type: room must be String, not int.
   await conn.roomSubscribe(SubscribeRequest(room: 1));

@@ -12,7 +12,7 @@ import (
 // goType renders the Go type for ref, given the display name chosen for
 // every named type by names.AssignTypeNames. Unlike TypeScript and
 // Dart, Go needs no hand-written (de)serialization: encoding/json already
-// implements exactly the semantics Latchwire's IR was designed around
+// implements exactly the semantics Latch's IR was designed around
 // (struct tags, omitempty, pointers for nullability), so the generated
 // client is just plain Go structs.
 func goType(ref protocol.TypeRef, typeNames map[string]string) string {
@@ -46,7 +46,7 @@ func goType(ref protocol.TypeRef, typeNames map[string]string) string {
 	case protocol.KindPointer:
 		return "*" + goType(*ref.Elem, typeNames)
 	case protocol.KindSlice, protocol.KindArray:
-		// Latchwire always generates a slice, even for a fixed-size Go
+		// Latch always generates a slice, even for a fixed-size Go
 		// array on the server: JSON itself has no fixed-length array type,
 		// so the client-side representation gains nothing from Go's [N]T
 		// and loses easy zero-value handling.

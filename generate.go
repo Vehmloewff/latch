@@ -1,4 +1,4 @@
-package latchwire
+package latch
 
 import (
 	"encoding/json"
@@ -20,7 +20,7 @@ type TypeScriptOptions struct {
 	OutputDir string
 
 	// ClientName overrides the generated class name (default
-	// LatchwireClient). See typescript.Options.ClientName.
+	// LatchClient). See typescript.Options.ClientName.
 	ClientName string
 }
 
@@ -31,11 +31,11 @@ type DartOptions struct {
 	OutputDir string
 
 	// Package overrides the generated pubspec/barrel-file package name
-	// (default latchwire_client). See dart.Options.Package.
+	// (default latch_client). See dart.Options.Package.
 	Package string
 
 	// ClientName overrides the generated class name (default
-	// LatchwireClient). See dart.Options.ClientName.
+	// LatchClient). See dart.Options.ClientName.
 	ClientName string
 }
 
@@ -48,11 +48,11 @@ type GoOptions struct {
 	OutputDir string
 
 	// Package overrides the generated package name (default
-	// latchwireclient). See golang.Options.Package.
+	// latchclient). See golang.Options.Package.
 	Package string
 
 	// ClientName overrides the generated type name (default
-	// LatchwireClient). See golang.Options.ClientName.
+	// LatchClient). See golang.Options.ClientName.
 	ClientName string
 }
 
@@ -95,10 +95,10 @@ func (s *Server[S]) GenerateTypeScript(opts TypeScriptOptions) error {
 	}
 	files, err := typescript.Generate(schema, typescript.Options{ClientName: opts.ClientName})
 	if err != nil {
-		return fmt.Errorf("latchwire: generate typescript: %w", err)
+		return fmt.Errorf("latch: generate typescript: %w", err)
 	}
 	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
-		return fmt.Errorf("latchwire: write typescript output: %w", err)
+		return fmt.Errorf("latch: write typescript output: %w", err)
 	}
 	return nil
 }
@@ -115,10 +115,10 @@ func (s *Server[S]) GenerateDart(opts DartOptions) error {
 		ClientName: opts.ClientName,
 	})
 	if err != nil {
-		return fmt.Errorf("latchwire: generate dart: %w", err)
+		return fmt.Errorf("latch: generate dart: %w", err)
 	}
 	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
-		return fmt.Errorf("latchwire: write dart output: %w", err)
+		return fmt.Errorf("latch: write dart output: %w", err)
 	}
 	dart.FormatDir(opts.OutputDir)
 	return nil
@@ -136,10 +136,10 @@ func (s *Server[S]) GenerateGo(opts GoOptions) error {
 		ClientName: opts.ClientName,
 	})
 	if err != nil {
-		return fmt.Errorf("latchwire: generate go: %w", err)
+		return fmt.Errorf("latch: generate go: %w", err)
 	}
 	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
-		return fmt.Errorf("latchwire: write go output: %w", err)
+		return fmt.Errorf("latch: write go output: %w", err)
 	}
 	return nil
 }
@@ -167,11 +167,11 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	return nil
 }
 
-// ownershipManifestName is the file Latchwire uses, inside each output
+// ownershipManifestName is the file Latch uses, inside each output
 // directory, to remember which files it generated last time — so a
 // subsequent generation can remove files for methods/types/events that no
 // longer exist without ever deleting a file it didn't create itself.
-const ownershipManifestName = ".latchwire-manifest.json"
+const ownershipManifestName = ".latch-manifest.json"
 
 type ownershipManifest struct {
 	Files []string `json:"files"`

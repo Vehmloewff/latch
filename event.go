@@ -1,4 +1,4 @@
-package latchwire
+package latch
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ type Emitter[E any] struct {
 // Send delivers one typed server-to-client event.
 func (e Emitter[E]) Send(payload E) error {
 	if e.conn == nil {
-		return fmt.Errorf("latchwire: emitter is not attached to a connection")
+		return fmt.Errorf("latch: emitter is not attached to a connection")
 	}
 	return e.conn.sendEventFrame(payload)
 }

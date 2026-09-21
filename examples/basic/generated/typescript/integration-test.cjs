@@ -4,7 +4,7 @@
 // WebSocket URL comes from LATCHWIRE_WS_URL so this can run against
 // either the standalone example server or an ephemeral httptest server
 // spun up by tests/integration/typescript_test.go.
-const { LatchwireClient, LatchwireError } = require("./dist/index");
+const { LatchClient, LatchError } = require("./dist/index");
 
 const url = process.env.LATCHWIRE_WS_URL || "ws://127.0.0.1:8080/ws";
 
@@ -15,7 +15,7 @@ const watchdog = setTimeout(() => {
 watchdog.unref?.();
 
 async function main() {
-  const client = new LatchwireClient({ url });
+  const client = new LatchClient({ url });
   const conn = await client.connect();
 
   const events = [];
@@ -73,7 +73,7 @@ async function main() {
   try {
     await conn.profileGet({ userId: "missing" });
   } catch (err) {
-    appErrorOk = err instanceof LatchwireError && err.code === "not_found";
+    appErrorOk = err instanceof LatchError && err.code === "not_found";
   }
   if (!appErrorOk) {
     throw new Error("expected profile.get({userId:'missing'}) to reject with not_found");

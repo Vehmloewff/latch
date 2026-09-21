@@ -1,4 +1,4 @@
-package latchwire
+package latch
 
 import "fmt"
 

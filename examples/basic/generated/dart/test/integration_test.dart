@@ -12,7 +12,7 @@ void main() {
   final url = Uri.parse(Platform.environment['LATCHWIRE_WS_URL'] ?? 'ws://127.0.0.1:8080/ws');
 
   test('generated Dart client integration', () async {
-    final client = LatchwireClient(ClientOptions(url));
+    final client = LatchClient(ClientOptions(url));
     final conn = await client.connect();
 
     final welcomeEvent = await conn.events.firstWhere((event) => event.kind == 'message');
@@ -43,7 +43,7 @@ void main() {
     // Application error.
     await expectLater(
       conn.profileGet(ProfileGetRequest(userId: 'missing')),
-      throwsA(isA<LatchwireError>().having((e) => e.code, 'code', 'not_found')),
+      throwsA(isA<LatchError>().having((e) => e.code, 'code', 'not_found')),
     );
 
     // Concurrent calls: fire many requests at once and verify every

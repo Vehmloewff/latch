@@ -1,7 +1,7 @@
-// Package jsonschema converts Latchwire's protocol IR (package protocol)
+// Package jsonschema converts Latch's protocol IR (package protocol)
 // into JSON Schema 2020-12 documents, and compiles those documents into
 // validators for runtime use. It is the only package that knows about JSON
-// Schema keywords; nothing else in Latchwire hand-builds schema documents.
+// Schema keywords; nothing else in Latch hand-builds schema documents.
 package jsonschema
 
 import (
@@ -15,7 +15,7 @@ const draft202012 = "https://json-schema.org/draft/2020-12/schema"
 
 // BuildDocument produces a complete, self-contained JSON Schema document for
 // root, including a "$defs" section for every named type it (transitively)
-// references. root must resolve to a named struct or enum type — Latchwire
+// references. root must resolve to a named struct or enum type — Latch
 // requires method requests/responses and the event payload to all be named
 // struct types.
 func BuildDocument(p *protocol.Protocol, root protocol.TypeRef) map[string]any {
@@ -182,7 +182,7 @@ func applyConstraints(s map[string]any, c *protocol.Constraints) {
 	}
 }
 
-// escapeRef encodes a Latchwire type ID (which may contain "/" from Go
+// escapeRef encodes a Latch type ID (which may contain "/" from Go
 // package paths) as a valid JSON Pointer token per RFC 6901.
 func escapeRef(id string) string {
 	id = strings.ReplaceAll(id, "~", "~0")

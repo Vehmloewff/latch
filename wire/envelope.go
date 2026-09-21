@@ -1,4 +1,4 @@
-// Package wire defines Latchwire's on-the-wire JSON envelope. Every
+// Package wire defines Latch's on-the-wire JSON envelope. Every
 // WebSocket text message, in both directions, is exactly one Envelope.
 package wire
 
@@ -44,7 +44,8 @@ type Envelope struct {
 	// request, response, or event payload
 	Payload json.RawMessage `json:"payload,omitempty"`
 
-	// error / connection_error. Errors intentionally carry only a safe,
-	// human-readable report message.
-	Error string `json:"error,omitempty"`
+	// error / connection_error. ErrorCode preserves the safe application
+	// error code while Error carries its human-readable message.
+	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"errorCode,omitempty"`
 }

@@ -42,26 +42,33 @@ func IsIdentifier(s string) bool {
 	if s == "" {
 		return false
 	}
-	for i, r := range s {
-		if i == 0 {
-			if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+	for _, segment := range strings.Split(s, ".") {
+		if segment == "" {
+			return false
+		}
+		for i, r := range segment {
+			if i == 0 {
+				if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+					return false
+				}
+				continue
+			}
+			if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 				return false
 			}
-			continue
-		}
-		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
-			return false
 		}
 	}
 	return true
 }
 
 // ValidateIdentifiers checks the method names in an IR before a generator
-// emits them as source-level methods.
+// emits them as source-level methods. It accepts the language-neutral
+// identifier syntax used by manually constructed Protocol values; servers
+// enforce snake_case at Register time.
 func ValidateIdentifiers(methodNames []string) error {
 	for _, name := range methodNames {
-		if !IsSnakeCase(name) {
-			return fmt.Errorf("method name %q must be snake_case", name)
+		if !IsIdentifier(name) {
+			return fmt.Errorf("method name %q must be a valid identifier", name)
 		}
 	}
 	return nil
