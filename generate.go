@@ -1,7 +1,6 @@
 package latch
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,8 +14,8 @@ import (
 
 // TypeScriptOptions configures TypeScript client generation.
 type TypeScriptOptions struct {
-	// OutputDir is the directory generated TypeScript files are written
-	// to, created if it does not already exist.
+	// OutputDir is the directory the generated TypeScript source file is
+	// written to, created if it does not already exist.
 	OutputDir string
 
 	// ClientName overrides the generated class name (default
@@ -26,8 +25,8 @@ type TypeScriptOptions struct {
 
 // DartOptions configures Dart client generation.
 type DartOptions struct {
-	// OutputDir is the directory the generated Dart package is written to
-	// (pubspec.yaml, lib/...), created if it does not already exist.
+	// OutputDir is the directory the generated Dart source file is written
+	// to, created if it does not already exist.
 	OutputDir string
 
 	// Package overrides the generated pubspec/barrel-file package name
@@ -41,10 +40,10 @@ type DartOptions struct {
 
 // GoOptions configures Go client generation.
 type GoOptions struct {
-	// OutputDir is the directory generated Go files are written to
-	// (types.go, client.go), created if it does not already exist. It is
-	// typically a subdirectory of the consuming Go module, since generated
-	// output is plain source files, not a separate module.
+	// OutputDir is the directory the generated Go source file is written to,
+	// created if it does not already exist. It is typically a subdirectory of
+	// the consuming Go module, since generated output is plain source, not a
+	// separate module.
 	OutputDir string
 
 	// Package overrides the generated package name (default
@@ -97,7 +96,7 @@ func (s *Server[S]) GenerateTypeScript(opts TypeScriptOptions) error {
 	if err != nil {
 		return fmt.Errorf("latch: generate typescript: %w", err)
 	}
-	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
 		return fmt.Errorf("latch: write typescript output: %w", err)
 	}
 	return nil
@@ -117,10 +116,10 @@ func (s *Server[S]) GenerateDart(opts DartOptions) error {
 	if err != nil {
 		return fmt.Errorf("latch: generate dart: %w", err)
 	}
-	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
 		return fmt.Errorf("latch: write dart output: %w", err)
 	}
-	dart.FormatDir(opts.OutputDir)
+
 	return nil
 }
 
@@ -138,7 +137,7 @@ func (s *Server[S]) GenerateGo(opts GoOptions) error {
 	if err != nil {
 		return fmt.Errorf("latch: generate go: %w", err)
 	}
-	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
 		return fmt.Errorf("latch: write go output: %w", err)
 	}
 	return nil
@@ -167,20 +166,10 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	return nil
 }
 
-// ownershipManifestName is the file Latch uses, inside each output
-// directory, to remember which files it generated last time — so a
-// subsequent generation can remove files for methods/types/events that no
-// longer exist without ever deleting a file it didn't create itself.
-const ownershipManifestName = ".latch-manifest.json"
-
-type ownershipManifest struct {
-	Files []string `json:"files"`
-}
-
-// writeOwnedFiles writes files (relative path -> contents) into dir,
-// creating it if necessary, then removes any file dir's previous
-// ownership manifest listed that is not present in files this time.
-func writeOwnedFiles(dir string, files map[string][]byte) error {
+// writeGeneratedFiles writes the files returned by a code generator into dir.
+// Each generated file is rendered completely in memory before it is moved into
+// place, so a failed write never leaves a partial file.
+func writeGeneratedFiles(dir string, files map[string][]byte) error {
 	if dir == "" {
 		return fmt.Errorf("output directory must not be empty")
 	}
@@ -188,17 +177,11 @@ func writeOwnedFiles(dir string, files map[string][]byte) error {
 		return err
 	}
 
-	var previous ownershipManifest
-	if raw, err := os.ReadFile(filepath.Join(dir, ownershipManifestName)); err == nil {
-		_ = json.Unmarshal(raw, &previous)
-	}
-
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-
 	for _, name := range names {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -212,21 +195,5 @@ func writeOwnedFiles(dir string, files map[string][]byte) error {
 			return err
 		}
 	}
-
-	current := map[string]bool{}
-	for _, name := range names {
-		current[name] = true
-	}
-	for _, name := range previous.Files {
-		if !current[name] {
-			_ = os.Remove(filepath.Join(dir, filepath.FromSlash(name)))
-		}
-	}
-
-	manifest := ownershipManifest{Files: names}
-	raw, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, ownershipManifestName), raw, 0o644)
+	return nil
 }

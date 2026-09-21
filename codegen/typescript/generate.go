@@ -7,6 +7,7 @@ package typescript
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/vehmloewff/latch/codegen"
 	"github.com/vehmloewff/latch/names"
@@ -47,13 +48,25 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("typescript: %w", err)
 	}
 
-	files := map[string][]byte{
-		"runtime.ts": []byte(header + runtimeBody),
-		"types.ts":   []byte(header + generateTypesFile(p, typeNames)),
-		"client.ts":  []byte(header + clientBody),
-		"index.ts":   []byte(header + generateIndexFile(clientName)),
+	// Keep runtime, protocol types, and the client in one importable source
+	// file. The generated sections are intentionally ordered so declarations
+	// are available before the client uses them.
+	typesBody := generateTypesFile(p, typeNames)
+	clientBody = stripImports(clientBody)
+	return map[string][]byte{
+		"client.ts": []byte(header + runtimeBody + "\n" + typesBody + "\n" + clientBody),
+	}, nil
+}
+
+func stripImports(src string) string {
+	var lines []string
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(line, "import ") {
+			continue
+		}
+		lines = append(lines, line)
 	}
-	return files, nil
+	return strings.Join(lines, "\n")
 }
 
 func generateIndexFile(clientName string) string {

@@ -98,13 +98,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	for _, name := range []string{"types.go", "client.go"} {
+	for _, name := range []string{"client.go"} {
 		if _, ok := files[name]; !ok {
 			t.Fatalf("expected file %q in generated output", name)
 		}
 	}
 
-	types := string(files["types.go"])
+	types := string(files["client.go"])
 	wantTypeSnippets := []string{
 		`type Invoice struct {`,
 		`Amount`,

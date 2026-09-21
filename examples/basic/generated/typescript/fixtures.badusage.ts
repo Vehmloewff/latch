@@ -1,7 +1,7 @@
 // Type-safety fixtures (spec section 48): every statement in this file
 // must fail to compile. Not named *.ts so it's excluded from the normal
 // tsc run; the verification script below renames it in temporarily.
-import { LatchClient } from "./index";
+import { LatchClient } from "./client";
 
 async function shouldFailToCompile(client: LatchClient) {
   const conn = await client.connect();

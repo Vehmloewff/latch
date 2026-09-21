@@ -10,6 +10,57 @@ import (
 	"github.com/vehmloewff/latch/client"
 )
 
+type Address struct {
+	City string  `json:"city"`
+	Zip  *string `json:"zip,omitempty"`
+}
+
+type Event struct {
+	Kind     string           `json:"kind"`
+	Message  *MessageReceived `json:"message,omitempty"`
+	Presence *PresenceChanged `json:"presence,omitempty"`
+}
+
+type ListRoomsRequest struct {
+}
+
+type ListRoomsResponse struct {
+	Rooms []string `json:"rooms"`
+}
+
+type MessageReceived struct {
+	Room string `json:"room"`
+	Text string `json:"text"`
+}
+
+type PresenceChanged struct {
+	UserID string `json:"userId"`
+	Online bool   `json:"online"`
+}
+
+type Profile struct {
+	Name     string   `json:"name"`
+	Nickname *string  `json:"nickname"`
+	Address  Address  `json:"address"`
+	Tags     []string `json:"tags"`
+}
+
+type ProfileGetRequest struct {
+	UserID string `json:"userId"`
+}
+
+type ProfileGetResponse struct {
+	Profile Profile `json:"profile"`
+}
+
+type SubscribeRequest struct {
+	Room string `json:"room"`
+}
+
+type SubscribeResponse struct {
+	OK bool `json:"ok"`
+}
+
 // LatchClient is a Latch client. Construct one with New,
 // then call Connect to obtain a ConnectedLatchClient.
 type LatchClient struct {

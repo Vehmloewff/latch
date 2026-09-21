@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "esModuleInterop": true
   },
-  "include": ["runtime.ts", "types.ts", "client.ts", "index.ts"]
+  "include": ["client.ts"]
 }

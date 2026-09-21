@@ -9,6 +9,7 @@ package dart
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/vehmloewff/latch/codegen"
 	"github.com/vehmloewff/latch/names"
@@ -44,8 +45,7 @@ func (o Options) resolve(_ *protocol.Protocol) Options {
 	return out
 }
 
-// Generate renders a complete Dart package from p, returning a map of
-// relative file path (from the package root) to file contents. It is
+// Generate renders a complete Dart client in one source file. It is
 // deterministic: the same protocol always produces byte-identical output.
 func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	if err := names.ValidateIdentifiers(methodNames(p)); err != nil {
@@ -65,14 +65,20 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("dart: %w", err)
 	}
 
-	files := map[string][]byte{
-		"pubspec.yaml":                  []byte(generatePubspec(opts)),
-		"lib/" + opts.Package + ".dart": []byte(header + generateBarrelFile(opts.ClientName)),
-		"lib/src/runtime.dart":          []byte(header + runtimeBody),
-		"lib/src/models.dart":           []byte(header + generateModelsFile(p, typeNames)),
-		"lib/src/client.dart":           []byte(header + clientBody),
+	return map[string][]byte{
+		"lib/client.dart": []byte(header + runtimeBody + "\n" + stripImports(generateModelsFile(p, typeNames)) + "\n" + stripImports(clientBody)),
+	}, nil
+}
+
+func stripImports(src string) string {
+	var lines []string
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(line, "import ") {
+			continue
+		}
+		lines = append(lines, line)
 	}
-	return files, nil
+	return strings.Join(lines, "\n")
 }
 
 func generatePubspec(opts Options) string {

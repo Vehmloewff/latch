@@ -106,13 +106,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	for _, name := range []string{"pubspec.yaml", "lib/latch_client.dart", "lib/src/runtime.dart", "lib/src/models.dart", "lib/src/client.dart"} {
+	for _, name := range []string{"lib/client.dart"} {
 		if _, ok := files[name]; !ok {
 			t.Fatalf("expected file %q in generated output; got %v", name, keysOf(files))
 		}
 	}
 
-	models := string(files["lib/src/models.dart"])
+	models := string(files["lib/client.dart"])
 	wantModelSnippets := []string{
 		`class Invoice {`,
 		`final int amount;`,
@@ -133,7 +133,7 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		}
 	}
 
-	client := string(files["lib/src/client.dart"])
+	client := string(files["lib/client.dart"])
 	wantClientSnippets := []string{
 		`class LatchClient {`,
 		`class ConnectedLatchClient extends BaseConnection {`,

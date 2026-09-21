@@ -1,8 +1,0 @@
-{
-  "files": [
-    "client.ts",
-    "index.ts",
-    "runtime.ts",
-    "types.ts"
-  ]
-}

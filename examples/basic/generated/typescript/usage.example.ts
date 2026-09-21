@@ -1,7 +1,7 @@
 // Not part of generated output: a hand-written usage smoke test for the
 // generated client's static typing, matching the "expected developer
 // experience" walkthrough in the README / spec section 44.
-import { LatchClient } from "./index";
+import { LatchClient } from "./client";
 
 async function main() {
   const client = new LatchClient({ url: "ws://localhost:8080/ws" });

@@ -97,13 +97,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	for _, name := range []string{"runtime.ts", "types.ts", "client.ts", "index.ts"} {
+	for _, name := range []string{"client.ts"} {
 		if _, ok := files[name]; !ok {
 			t.Fatalf("expected file %q in generated output", name)
 		}
 	}
 
-	types := string(files["types.ts"])
+	types := string(files["client.ts"])
 	wantSnippets := []string{
 		`export interface Invoice {`,
 		`amount: number;`,

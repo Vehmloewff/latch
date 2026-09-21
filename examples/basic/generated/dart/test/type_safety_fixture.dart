@@ -6,7 +6,7 @@
 // analyzer error. If a generated API ever stopped being genuinely typed
 // (e.g. a field silently became `dynamic`), the corresponding assertion
 // here would stop finding an error and the test would fail.
-import 'package:basic_client/basic_client.dart';
+import 'package:basic_client/client.dart';
 
 Future<void> shouldFailToAnalyze(LatchClient client) async {
   final conn = await client.connect();

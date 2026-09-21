@@ -4,7 +4,7 @@
 // WebSocket URL comes from LATCHWIRE_WS_URL so this can run against
 // either the standalone example server or an ephemeral httptest server
 // spun up by tests/integration/typescript_test.go.
-const { LatchClient, LatchError } = require("./dist/index");
+const { LatchClient, LatchError } = require("./dist/client");
 
 const url = process.env.LATCHWIRE_WS_URL || "ws://127.0.0.1:8080/ws";
 

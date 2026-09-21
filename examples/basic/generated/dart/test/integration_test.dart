@@ -5,7 +5,7 @@
 // tests/integration/dart_test.go.
 import 'dart:io';
 
-import 'package:basic_client/basic_client.dart';
+import 'package:basic_client/client.dart';
 import 'package:test/test.dart';
 
 void main() {
