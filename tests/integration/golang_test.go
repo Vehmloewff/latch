@@ -24,8 +24,8 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 	root := repoRoot(t)
 	outDir := root + "/examples/basic/generated/golang"
 
-	if err := api.Build().Generate(latchwire.GenerateOptions{
-		Go: &latchwire.GoOptions{OutputDir: outDir, Package: "basicclient"},
+	if err := api.Build().Generate(latch.GenerateOptions{
+		Go: &latch.GoOptions{OutputDir: outDir, Package: "basicclient"},
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -106,8 +106,8 @@ func TestGeneratedGoClientAgainstLiveServer(t *testing.T) {
 		t.Fatalf("expected profile.get(userId=missing) to fail")
 	}
 	var appErr *client.Error
-	if !errors.As(err, &appErr) || appErr.Code != "not_found" {
-		t.Fatalf("expected *client.Error{Code: not_found}, got %v", err)
+	if !errors.As(err, &appErr) || appErr.Code != "not_found" || appErr.Message != "user not found" {
+		t.Fatalf("expected not_found application error, got %v", err)
 	}
 
 	// Concurrent calls: fire many requests at once and verify every

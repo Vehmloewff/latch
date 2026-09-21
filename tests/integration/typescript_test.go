@@ -1,5 +1,5 @@
 // Package integration holds cross-process integration tests that exercise
-// a generated client against a live Latchwire Go server, per spec section
+// a generated client against a live Latch Go server, per spec section
 // 49 ("Cross-language integration suite"). These tests shell out to real
 // toolchains (node, tsc) and are skipped, with a clear reason, when those
 // toolchains aren't available in the environment rather than failing the
@@ -58,8 +58,8 @@ func TestGeneratedTypeScriptClientAgainstLiveServer(t *testing.T) {
 	// Regenerate from the current generator so this test catches
 	// regressions in codegen itself, not just in previously-committed
 	// output.
-	if err := api.Build().Generate(latchwire.GenerateOptions{
-		TypeScript: &latchwire.TypeScriptOptions{OutputDir: tsDir},
+	if err := api.Build().Generate(latch.GenerateOptions{
+		TypeScript: &latch.TypeScriptOptions{OutputDir: tsDir},
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

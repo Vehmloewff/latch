@@ -25,8 +25,8 @@ func TestGeneratedDartClientAgainstLiveServer(t *testing.T) {
 		t.Skipf("skipping: %s/.dart_tool not found; run `dart pub get` in %s first", dartDir, dartDir)
 	}
 
-	if err := api.Build().Generate(latchwire.GenerateOptions{
-		Dart: &latchwire.DartOptions{OutputDir: dartDir, Package: "basic_client"},
+	if err := api.Build().Generate(latch.GenerateOptions{
+		Dart: &latch.DartOptions{OutputDir: dartDir, Package: "basic_client"},
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

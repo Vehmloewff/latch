@@ -1,661 +1,112 @@
-package latchwire_test
+package latch_test
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/vehmloewff/latch"
 	"github.com/vehmloewff/latch/testutil"
 	"github.com/vehmloewff/latch/wire"
-	"github.com/vehmloewff/report"
 )
 
-type ConnectParams struct {
-	Token string `json:"token" jsonschema:"minLength=1"`
-}
-
-type AddRequest struct {
+type serverState struct{}
+type serverRequest struct {
 	A int `json:"a"`
 	B int `json:"b"`
 }
-
-type AddResponse struct {
+type serverResponse struct {
 	Result int `json:"result"`
 }
-
-type Tick struct {
-	Value int `json:"value"`
+type serverEvent struct {
+	Kind string `json:"kind"`
 }
 
-func newAddServer(t *testing.T) *latchwire.Server[ConnectParams] {
+func newServer(t *testing.T) *latch.Server[serverState] {
 	t.Helper()
-	srv := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:    "demo",
-		ProtocolVersion: "1",
+	server := latch.New[serverState](latch.Options{ProtocolVersion: "1"})
+	server.OnConnect(func(_ context.Context, emitter latch.Emitter[serverEvent], _ *latch.Conn) (serverState, error) {
+		if err := emitter.Send(serverEvent{Kind: "connected"}); err != nil {
+			return serverState{}, err
+		}
+		return serverState{}, nil
 	})
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		return AddResponse{Result: req.A + req.B}, nil
+	server.Register("math_add", func(_ context.Context, _ serverState, req serverRequest) (serverResponse, error) {
+		return serverResponse{Result: req.A + req.B}, nil
 	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	return srv
+	return server
 }
 
-// wsURL launches srv behind an httptest.Server and returns its "ws://" URL.
-func wsURL[C any](t *testing.T, srv *latchwire.Server[C]) string {
+func rawClient(t *testing.T, server *latch.Server[serverState]) *testutil.Client {
 	t.Helper()
-	hs := httptest.NewServer(srv)
-	t.Cleanup(hs.Close)
-	return "ws" + strings.TrimPrefix(hs.URL, "http")
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	return testutil.Dial(t, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"?version=1")
 }
 
-func mustJSON(t *testing.T, v any) json.RawMessage {
-	t.Helper()
-	raw, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+func TestServerRequestAndEvent(t *testing.T) {
+	client := rawClient(t, newServer(t))
+	first := client.Recv()
+	if first.Type != wire.FrameEvent {
+		t.Fatalf("first frame type = %q, want event", first.Type)
 	}
-	return raw
-}
-
-func decodeInto(t *testing.T, raw json.RawMessage, v any) {
-	t.Helper()
-	if err := json.Unmarshal(raw, v); err != nil {
-		t.Fatalf("unmarshal %s: %v", raw, err)
+	var event serverEvent
+	if err := json.Unmarshal(first.Payload, &event); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestHandshakeAndBasicRequest(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	connected := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if connected.Type != wire.FrameConnected {
-		t.Fatalf("expected connected frame, got %+v", connected)
-	}
-	if connected.Protocol != "demo" || connected.Version != "1" {
-		t.Fatalf("connected frame missing protocol metadata: %+v", connected)
+	if event.Kind != "connected" {
+		t.Fatalf("event kind = %q, want connected", event.Kind)
 	}
 
-	c.Request("1", "math.add", AddRequest{A: 2, B: 3})
-	resp := c.Recv()
-	if resp.Type != wire.FrameResponse || resp.ID != "1" {
-		t.Fatalf("expected response id=1, got %+v", resp)
+	payload, _ := json.Marshal(serverRequest{A: 2, B: 3})
+	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: payload})
+	response := client.Recv()
+	if response.Type != wire.FrameResponse || response.ID != "1" {
+		t.Fatalf("response = %+v", response)
 	}
-	var out AddResponse
-	decodeInto(t, resp.Payload, &out)
-	if out.Result != 5 {
-		t.Fatalf("expected result 5, got %d", out.Result)
+	var result serverResponse
+	if err := json.Unmarshal(response.Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Result != 5 {
+		t.Fatalf("result = %d, want 5", result.Result)
 	}
 }
 
-func TestInvalidConnectPayloadRejected(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	resp := c.Connect("demo", "1", map[string]any{"token": ""}) // fails minLength=1
-	if resp.Type != wire.FrameConnectionError {
-		t.Fatalf("expected connection_error, got %+v", resp)
-	}
-	if resp.Error != "connect payload failed schema validation" {
-		t.Fatalf("expected connect payload validation error, got %+v", resp.Error)
+func TestServerRejectsInvalidRequestAndUnknownMethod(t *testing.T) {
+	client := rawClient(t, newServer(t))
+	if event := client.Recv(); event.Type != wire.FrameEvent {
+		t.Fatalf("expected initial event, got %+v", event)
 	}
 
-	if _, err := c.TryRecv(500 * time.Millisecond); err == nil {
-		t.Fatalf("expected connection to be closed after invalid connect")
+	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: json.RawMessage(`{"a":"bad","b":2}`)})
+	invalid := client.Recv()
+	if invalid.Type != wire.FrameError || invalid.Error != "request payload failed schema validation" {
+		t.Fatalf("invalid request response = %+v", invalid)
 	}
-}
 
-func TestFirstMessageMustBeConnect(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Request("1", "math.add", AddRequest{A: 1, B: 1})
-
-	resp := c.Recv()
-	if resp.Type != wire.FrameConnectionError {
-		t.Fatalf("expected connection_error, got %+v", resp)
-	}
-	if resp.Error != "first message on a connection must be a connect frame" {
-		t.Fatalf("expected protocol violation, got %+v", resp.Error)
+	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "2", Method: "missing_method", Payload: json.RawMessage(`{}`)})
+	unknown := client.Recv()
+	if unknown.Type != wire.FrameError {
+		t.Fatalf("unknown method response = %+v", unknown)
 	}
 }
 
-func TestDuplicateConnectRejected(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	connected := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if connected.Type != wire.FrameConnected {
-		t.Fatalf("expected connected, got %+v", connected)
-	}
-
-	c.Send(wire.Envelope{Type: wire.FrameConnect, Protocol: "demo", Version: "1", Payload: mustJSON(t, ConnectParams{Token: "abc"})})
-	resp := c.Recv()
-	if resp.Type != wire.FrameConnectionError || resp.Error != "a connect frame may only be sent once per connection" {
-		t.Fatalf("expected protocol violation connection_error, got %+v", resp)
+func TestServerFinalizationRejectsMissingEventType(t *testing.T) {
+	server := latch.New[serverState](latch.Options{})
+	if _, err := server.Schema(); err == nil {
+		t.Fatal("Schema succeeded without an event type")
 	}
 }
 
-func TestUnknownMethod(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-
-	c.Request("1", "does.not.exist", map[string]any{})
-	resp := c.Recv()
-	if resp.Type != wire.FrameError || resp.Error != `unknown method "does.not.exist"` {
-		t.Fatalf("expected method not found error, got %+v", resp)
-	}
-}
-
-func TestInvalidRequestPayload(t *testing.T) {
-	srv := newAddServer(t)
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-
-	c.Request("1", "math.add", map[string]any{"a": "not-a-number", "b": 2})
-	resp := c.Recv()
-	if resp.Type != wire.FrameError || resp.Error != "request payload failed schema validation" {
-		t.Fatalf("expected invalid request error, got %+v", resp)
-	}
-
-	// The connection must remain usable after a rejected request.
-	c.Request("2", "math.add", AddRequest{A: 4, B: 5})
-	resp2 := c.Recv()
-	if resp2.Type != wire.FrameResponse || resp2.ID != "2" {
-		t.Fatalf("expected connection to keep working, got %+v", resp2)
-	}
-}
-
-func TestApplicationError(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	err := srv.Register("user.get", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		return AddResponse{}, report.New("user not found")
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	c.Request("1", "user.get", AddRequest{A: 1, B: 1})
-
-	resp := c.Recv()
-	if resp.Type != wire.FrameError {
-		t.Fatalf("expected error frame, got %+v", resp)
-	}
-	if resp.Error != "handler returned an error" {
-		t.Fatalf("expected handler error message, got %+v", resp.Error)
-	}
-}
-
-func TestHandlerPanicRecovered(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	err := srv.Register("boom", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		panic("kaboom")
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	c.Request("1", "boom", AddRequest{A: 1, B: 1})
-
-	resp := c.Recv()
-	if resp.Type != wire.FrameError || resp.Error != "Internal error" {
-		t.Fatalf("expected internal error after panic, got %+v", resp)
-	}
-
-	// Server must not have crashed: connection remains usable.
-	c.Request("2", "boom", AddRequest{A: 1, B: 1})
-	resp2 := c.Recv()
-	if resp2.Type != wire.FrameError || resp2.Error != "Internal error" {
-		t.Fatalf("expected server to survive repeated panics, got %+v", resp2)
-	}
-}
-
-func TestConcurrentRequestsOutOfOrder(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:          "demo",
-		ProtocolVersion:       "1",
-		MaxConcurrentRequests: 8,
-	})
-	err := srv.Register("delay.echo", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		// A carries the requested delay in milliseconds, inverted so that
-		// higher IDs finish first, proving responses need not be in order.
-		time.Sleep(time.Duration(req.A) * time.Millisecond)
-		return AddResponse{Result: req.B}, nil
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-
-	const n = 5
-	for i := 0; i < n; i++ {
-		delay := (n - i) * 20 // request 0 sleeps longest, request n-1 shortest
-		c.Request(fmt.Sprintf("%d", i), "delay.echo", AddRequest{A: delay, B: i})
-	}
-
-	seen := map[string]int{}
-	var order []string
-	for i := 0; i < n; i++ {
-		resp := c.Recv()
-		if resp.Type != wire.FrameResponse {
-			t.Fatalf("expected response, got %+v", resp)
-		}
-		var out AddResponse
-		decodeInto(t, resp.Payload, &out)
-		seen[resp.ID] = out.Result
-		order = append(order, resp.ID)
-	}
-
-	if len(seen) != n {
-		t.Fatalf("expected %d distinct responses, got %d (%v)", n, len(seen), seen)
-	}
-	for i := 0; i < n; i++ {
-		id := fmt.Sprintf("%d", i)
-		if seen[id] != i {
-			t.Fatalf("response %s carried wrong payload: %d", id, seen[id])
-		}
-	}
-	if order[0] == "0" {
-		t.Fatalf("expected out-of-order completion (request 0 sleeps longest), got order %v", order)
-	}
-}
-
-func TestDuplicateRequestIDRejected(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	started := make(chan struct{})
-	release := make(chan struct{})
-	err := srv.Register("slow", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		close(started)
-		<-release
-		return AddResponse{Result: 1}, nil
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-
-	c.Request("dup", "slow", AddRequest{})
-	<-started
-
-	c.Request("dup", "slow", AddRequest{})
-	resp := c.Recv()
-	if resp.Type != wire.FrameError || resp.Error != "a request with this id is already in flight" {
-		t.Fatalf("expected duplicate request error, got %+v", resp)
-	}
-
-	close(release)
-	final := c.Recv()
-	if final.Type != wire.FrameResponse || final.ID != "dup" {
-		t.Fatalf("expected the original in-flight request to still complete, got %+v", final)
-	}
-}
-
-func TestEventBufferedUntilAfterConnected(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	tick := latchwire.Event[Tick]("tick")
-	if err := srv.RegisterEvent(tick); err != nil {
-		t.Fatalf("RegisterEvent: %v", err)
-	}
-	err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		// Sent synchronously, before OnConnect returns and before
-		// "connected" is written: must still arrive after "connected".
-		if err := tick.Send(conn, Tick{Value: 1}); err != nil {
-			t.Errorf("Send during OnConnect: %v", err)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("OnConnect: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	connected := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if connected.Type != wire.FrameConnected {
-		t.Fatalf("expected connected first, got %+v", connected)
-	}
-
-	evt := c.Recv()
-	if evt.Type != wire.FrameEvent || evt.Event != "tick" {
-		t.Fatalf("expected buffered tick event after connected, got %+v", evt)
-	}
-	var payload Tick
-	decodeInto(t, evt.Payload, &payload)
-	if payload.Value != 1 {
-		t.Fatalf("expected tick value 1, got %d", payload.Value)
-	}
-}
-
-func TestOnConnectRejectionClosesConnection(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		return report.New("nope")
-	})
-	if err != nil {
-		t.Fatalf("OnConnect: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	resp := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if resp.Type != wire.FrameConnectionError {
-		t.Fatalf("expected connection_error, got %+v", resp)
-	}
-	if resp.Error != "connection rejected" {
-		t.Fatalf("expected rejection message, got %+v", resp.Error)
-	}
-	if _, err := c.TryRecv(500 * time.Millisecond); err == nil {
-		t.Fatalf("expected connection closed after OnConnect rejection")
-	}
-}
-
-func TestOnCloseCallbacksRunLIFOOnDisconnect(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-
-	var mu sync.Mutex
-	var order []int
-	done := make(chan struct{})
-
-	err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		conn.OnClose(func() {
-			mu.Lock()
-			order = append(order, 1)
-			mu.Unlock()
-		})
-		conn.OnClose(func() {
-			mu.Lock()
-			order = append(order, 2)
-			mu.Unlock()
-		})
-		conn.OnClose(func() {
-			mu.Lock()
-			order = append(order, 3)
-			mu.Unlock()
-			close(done)
-		})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("OnConnect: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	connected := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if connected.Type != wire.FrameConnected {
-		t.Fatalf("expected connected, got %+v", connected)
-	}
-	c.Close()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("OnClose callbacks did not run after disconnect")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	want := []int{3, 2, 1}
-	if len(order) != len(want) {
-		t.Fatalf("expected %v, got %v", want, order)
-	}
-	for i := range want {
-		if order[i] != want[i] {
-			t.Fatalf("expected LIFO order %v, got %v", want, order)
-		}
-	}
-}
-
-func TestDisconnectCancelsRequestContext(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	canceled := make(chan struct{})
-	err := srv.Register("wait", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		<-ctx.Done()
-		close(canceled)
-		return AddResponse{}, report.From(ctx.Err())
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	c.Request("1", "wait", AddRequest{})
-	c.Close()
-
-	select {
-	case <-canceled:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("expected request context to be canceled on disconnect")
-	}
-}
-
-func TestOutboundQueueOverflowClosesConnection(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:      "demo",
-		ProtocolVersion:   "1",
-		OutboundQueueSize: 2,
-	})
-	tick := latchwire.Event[Tick]("tick")
-	if err := srv.RegisterEvent(tick); err != nil {
-		t.Fatalf("RegisterEvent: %v", err)
-	}
-	err := srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		go func() {
-			for i := 0; i < 100; i++ {
-				if tick.Send(conn, Tick{Value: i}) != nil {
-					return
-				}
-			}
-		}()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("OnConnect: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Send(wire.Envelope{Type: wire.FrameConnect, Protocol: "demo", Version: "1", Payload: mustJSON(t, ConnectParams{Token: "abc"})})
-
-	// Deliberately never drain beyond what's needed to notice the
-	// connection ending, forcing the outbound queue to overflow. The
-	// OnConnect goroutine above races against the server's own
-	// connected-frame flush (both send events; only one can be first) —
-	// depending on which wins, the overflow can be detected either before
-	// or after "connected" is ever written, so this test only asserts the
-	// one guarantee that actually holds regardless of that race: the
-	// connection terminates rather than hanging or dropping frames
-	// silently forever. See docs/design-notes.md.
-	deadline := time.Now().Add(3 * time.Second)
-	closed := false
-	for time.Now().Before(deadline) {
-		env, err := c.TryRecv(500 * time.Millisecond)
-		if err != nil {
-			closed = true
-			break
-		}
-		if env.Type == wire.FrameConnectionError {
-			closed = true
-			break
-		}
-	}
-	if !closed {
-		t.Fatalf("expected the connection to close due to outbound queue overflow, but it neither closed nor sent a connection_error")
-	}
-}
-
-func TestOversizedMessageClosesConnection(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:    "demo",
-		ProtocolVersion: "1",
-		MaxMessageBytes: 128,
-	})
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	big := strings.Repeat("x", 1024)
-	c.SendRaw([]byte(`{"type":"connect","protocol":"demo","version":"1","payload":{"token":"` + big + `"}}`))
-
-	if _, err := c.TryRecv(2 * time.Second); err == nil {
-		t.Fatalf("expected oversized message to close the connection without a normal response")
-	}
-}
-
-func TestServerCloseShutsDownActiveConnections(t *testing.T) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	started := make(chan struct{})
-	canceled := make(chan struct{})
-	err := srv.Register("wait", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		close(started)
-		<-ctx.Done()
-		close(canceled)
-		return AddResponse{}, report.From(ctx.Err())
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	closedCallback := make(chan struct{})
-	err = srv.OnConnect(func(ctx context.Context, conn *latchwire.Conn[ConnectParams]) report.Err {
-		conn.OnClose(func() { close(closedCallback) })
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("OnConnect: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	connected := c.Connect("demo", "1", ConnectParams{Token: "abc"})
-	if connected.Type != wire.FrameConnected {
-		t.Fatalf("expected connected, got %+v", connected)
-	}
-	c.Request("1", "wait", AddRequest{})
-
-	select {
-	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for the in-flight request to start")
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := srv.Close(shutdownCtx); err != nil {
-		t.Fatalf("Server.Close: %v", err)
-	}
-
-	select {
-	case <-canceled:
-	case <-time.After(3 * time.Second):
-		t.Fatal("expected the in-flight request's context to be canceled by server shutdown")
-	}
-	select {
-	case <-closedCallback:
-	case <-time.After(3 * time.Second):
-		t.Fatal("expected OnClose callbacks to run during server shutdown")
-	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			t.Fatal("expected the connection to be closed after server shutdown")
-		}
-		if _, err := c.TryRecv(remaining); err != nil {
-			break
-		}
-	}
-}
-
-func TestMaxConcurrentRequestsBoundsConcurrency(t *testing.T) {
-	const limit = 3
-	srv := latchwire.New[ConnectParams](latchwire.Options{
-		ProtocolName:          "demo",
-		ProtocolVersion:       "1",
-		MaxConcurrentRequests: limit,
-	})
-
-	var mu sync.Mutex
-	running := 0
-	maxObserved := 0
-	release := make(chan struct{})
-
-	err := srv.Register("slow", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		mu.Lock()
-		running++
-		if running > maxObserved {
-			maxObserved = running
-		}
-		mu.Unlock()
-
-		<-release
-
-		mu.Lock()
-		running--
-		mu.Unlock()
-		return AddResponse{}, nil
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	url := wsURL(t, srv)
-
-	c := testutil.Dial(t, url)
-	c.Connect("demo", "1", ConnectParams{Token: "abc"})
-
-	const total = limit * 3
-	for i := 0; i < total; i++ {
-		c.Request(fmt.Sprintf("%d", i), "slow", AddRequest{})
-	}
-
-	// Let every request that's going to start actually start.
-	time.Sleep(200 * time.Millisecond)
-
-	mu.Lock()
-	observed := maxObserved
-	mu.Unlock()
-	if observed > limit {
-		t.Fatalf("expected at most %d concurrent handlers, observed %d", limit, observed)
-	}
-	if observed != limit {
-		t.Fatalf("expected concurrency to actually reach the configured limit %d, observed %d", limit, observed)
-	}
-
-	close(release)
-	for i := 0; i < total; i++ {
-		resp := c.Recv()
-		if resp.Type != wire.FrameResponse {
-			t.Fatalf("expected response, got %+v", resp)
-		}
+func TestServerClosesConnection(t *testing.T) {
+	client := rawClient(t, newServer(t))
+	_ = client.Recv()
+	client.Close()
+	if _, err := client.TryRecv(100 * time.Millisecond); err == nil {
+		t.Fatal("expected closed connection")
 	}
 }

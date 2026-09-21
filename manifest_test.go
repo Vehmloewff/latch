@@ -1,4 +1,4 @@
-package latchwire_test
+package latch_test
 
 import (
 	"bytes"
@@ -6,48 +6,51 @@ import (
 	"testing"
 
 	"github.com/vehmloewff/latch"
-	"github.com/vehmloewff/report"
 )
 
-func buildManifestFixtureServer(t *testing.T) *latchwire.Server[ConnectParams] {
-	t.Helper()
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-
-	tick := latchwire.Event[Tick]("tick")
-	if err := srv.RegisterEvent(tick); err != nil {
-		t.Fatalf("RegisterEvent: %v", err)
-	}
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		return AddResponse{Result: req.A + req.B}, nil
-	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	return srv
+type manifestState struct{}
+type manifestRequest struct {
+	Value string `json:"value"`
+}
+type manifestResponse struct {
+	Value string `json:"value"`
+}
+type manifestEvent struct {
+	Kind string `json:"kind"`
 }
 
-// TestManifestIsDeterministic verifies spec section 32: the same
-// registrations always produce byte-identical manifest JSON, both across
-// repeated calls on one server and across two independently built servers.
+func buildManifestFixtureServer(t *testing.T) *latch.Server[manifestState] {
+	t.Helper()
+	server := latch.New[manifestState](latch.Options{ProtocolVersion: "1"})
+	server.OnConnect(func(context.Context, latch.Emitter[manifestEvent], *latch.Conn) (manifestState, error) {
+		return manifestState{}, nil
+	})
+	server.Register("echo_value", func(context.Context, manifestState, manifestRequest) (manifestResponse, error) {
+		return manifestResponse{}, nil
+	})
+	return server
+}
+
 func TestManifestIsDeterministic(t *testing.T) {
-	srv1 := buildManifestFixtureServer(t)
-	srv2 := buildManifestFixtureServer(t)
+	server1 := buildManifestFixtureServer(t)
+	server2 := buildManifestFixtureServer(t)
 
-	var buf1, buf2, buf1Again bytes.Buffer
-	if err := srv1.WriteManifest(&buf1); err != nil {
-		t.Fatalf("WriteManifest 1: %v", err)
+	var first, second, repeat bytes.Buffer
+	for name, server := range map[string]*latch.Server[manifestState]{"first": server1, "second": server2} {
+		var target *bytes.Buffer
+		if name == "first" {
+			target = &first
+		} else {
+			target = &second
+		}
+		if err := server.WriteManifest(target); err != nil {
+			t.Fatalf("WriteManifest %s: %v", name, err)
+		}
 	}
-	if err := srv1.WriteManifest(&buf1Again); err != nil {
-		t.Fatalf("WriteManifest 1 (again): %v", err)
+	if err := server1.WriteManifest(&repeat); err != nil {
+		t.Fatalf("WriteManifest repeat: %v", err)
 	}
-	if err := srv2.WriteManifest(&buf2); err != nil {
-		t.Fatalf("WriteManifest 2: %v", err)
-	}
-
-	if buf1.String() != buf1Again.String() {
-		t.Fatalf("repeated WriteManifest on the same server produced different output")
-	}
-	if buf1.String() != buf2.String() {
-		t.Fatalf("two independently built, identically registered servers produced different manifests")
+	if first.String() != repeat.String() || first.String() != second.String() {
+		t.Fatal("identical servers produced different manifests")
 	}
 }

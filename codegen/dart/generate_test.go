@@ -106,7 +106,7 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	for _, name := range []string{"pubspec.yaml", "lib/billing_client.dart", "lib/src/runtime.dart", "lib/src/models.dart", "lib/src/client.dart"} {
+	for _, name := range []string{"pubspec.yaml", "lib/latch_client.dart", "lib/src/runtime.dart", "lib/src/models.dart", "lib/src/client.dart"} {
 		if _, ok := files[name]; !ok {
 			t.Fatalf("expected file %q in generated output; got %v", name, keysOf(files))
 		}
@@ -135,14 +135,12 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 
 	client := string(files["lib/src/client.dart"])
 	wantClientSnippets := []string{
-		`class BillingClient {`,
-		`class ConnectedBillingClient extends BaseConnection {`,
-		`class _BillingClientBillingNamespace {`,
-		`class _BillingClientBillingInvoiceNamespace {`,
+		`class LatchClient {`,
+		`class ConnectedLatchClient extends BaseConnection {`,
+		`Future<GetInvoiceResponse> billingInvoiceGet`,
+		`Future<UserGetResponse> userGet`,
 		`"billing.invoice.get"`,
 		`"user.get"`,
-		`class BillingClientEvents {`,
-		`"billing.invoice.updated"`,
 	}
 	for _, want := range wantClientSnippets {
 		if !bytes.Contains([]byte(client), []byte(want)) {
@@ -195,18 +193,5 @@ func TestEventPropertyCollisionRejected(t *testing.T) {
 
 	if _, err := Generate(p, Options{}); err == nil {
 		t.Fatalf("expected event property name collision to be rejected")
-	}
-}
-
-func TestMethodNamespaceLeafCollisionRejected(t *testing.T) {
-	p := buildFixtureProtocol(t)
-	p.Methods = append(p.Methods, protocol.Method{
-		Name:         "billing.invoice",
-		RequestType:  p.Methods[0].RequestType,
-		ResponseType: p.Methods[0].ResponseType,
-	})
-
-	if _, err := Generate(p, Options{}); err == nil {
-		t.Fatalf("expected method namespace collision (billing.invoice vs billing.invoice.get) to be rejected")
 	}
 }

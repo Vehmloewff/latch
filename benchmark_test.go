@@ -1,4 +1,4 @@
-package latchwire_test
+package latch_test
 
 import (
 	"context"
@@ -9,49 +9,44 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/vehmloewff/report"
 
 	"github.com/vehmloewff/latch"
 	"github.com/vehmloewff/latch/wire"
 )
 
-// BenchmarkRequestRoundTrip measures single-connection request/response
-// throughput: schema validation, decode, handler dispatch, encode, and the
-// write-pump round trip, end to end over a real (loopback) WebSocket. Per
-// spec section 53, Latchwire is not trying to beat a custom binary
-// protocol — this exists to catch obvious regressions (e.g. accidentally
-// recompiling a schema per request), not to chase a specific number.
+type benchmarkState struct{}
+type benchmarkRequest struct {
+	A int `json:"a"`
+	B int `json:"b"`
+}
+type benchmarkResponse struct {
+	Result int `json:"result"`
+}
+type benchmarkEvent struct{}
+
 func BenchmarkRequestRoundTrip(b *testing.B) {
-	srv := latchwire.New[ConnectParams](latchwire.Options{ProtocolName: "demo", ProtocolVersion: "1"})
-	err := srv.Register("math.add", func(ctx context.Context, conn *latchwire.Conn[ConnectParams], req AddRequest) (AddResponse, report.Err) {
-		return AddResponse{Result: req.A + req.B}, nil
+	server := latch.New[benchmarkState](latch.Options{ProtocolVersion: "1"})
+	server.OnConnect(func(context.Context, latch.Emitter[benchmarkEvent], *latch.Conn) (benchmarkState, error) {
+		return benchmarkState{}, nil
 	})
-	if err != nil {
-		b.Fatalf("Register: %v", err)
-	}
+	server.Register("math_add", func(_ context.Context, _ benchmarkState, req benchmarkRequest) (benchmarkResponse, error) {
+		return benchmarkResponse{Result: req.A + req.B}, nil
+	})
 
-	hs := httptest.NewServer(srv)
-	defer hs.Close()
-	url := "ws" + strings.TrimPrefix(hs.URL, "http")
-
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http")
 	ctx := context.Background()
-	ws, _, err := websocket.Dial(ctx, url, nil)
+	ws, _, err := websocket.Dial(ctx, url+"?version=1", nil)
 	if err != nil {
 		b.Fatalf("dial: %v", err)
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
 
-	mustMarshal := func(v any) json.RawMessage {
-		raw, err := json.Marshal(v)
-		if err != nil {
-			b.Fatalf("marshal: %v", err)
-		}
-		return raw
-	}
 	send := func(env wire.Envelope) {
 		raw, err := json.Marshal(env)
 		if err != nil {
-			b.Fatalf("marshal envelope: %v", err)
+			b.Fatalf("marshal: %v", err)
 		}
 		if err := ws.Write(ctx, websocket.MessageText, raw); err != nil {
 			b.Fatalf("write: %v", err)
@@ -64,22 +59,16 @@ func BenchmarkRequestRoundTrip(b *testing.B) {
 		}
 		var env wire.Envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
-			b.Fatalf("unmarshal envelope: %v", err)
+			b.Fatalf("unmarshal: %v", err)
 		}
 		return env
 	}
 
-	send(wire.Envelope{Type: wire.FrameConnect, Protocol: "demo", Version: "1", Payload: mustMarshal(ConnectParams{Token: "abc"})})
-	if connected := recv(); connected.Type != wire.FrameConnected {
-		b.Fatalf("expected connected, got %+v", connected)
-	}
-
 	b.ResetTimer()
-	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
 		id := strconv.Itoa(i)
-		send(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: "math.add", Payload: mustMarshal(AddRequest{A: i, B: 1})})
+		raw, _ := json.Marshal(benchmarkRequest{A: i, B: 1})
+		send(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: "math_add", Payload: raw})
 		resp := recv()
 		if resp.Type != wire.FrameResponse || resp.ID != id {
 			b.Fatalf("unexpected response: %+v", resp)

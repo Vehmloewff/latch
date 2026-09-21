@@ -134,16 +134,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 
 	client := string(files["client.go"])
 	wantClientSnippets := []string{
-		`type BillingClient struct {`,
-		`type ConnectedBillingClient struct {`,
-		`type BillingClientBillingNamespace struct {`,
-		`type BillingClientBillingInvoiceNamespace struct {`,
-		`func (n *BillingClientBillingInvoiceNamespace) Get(ctx context.Context, req GetInvoiceRequest) (GetInvoiceResponse, error) {`,
-		`client.Call[GetInvoiceResponse](ctx, n.conn, "billing.invoice.get", req)`,
-		`func (n *BillingClientUserNamespace) Get(ctx context.Context, req UserGetRequest) (UserGetResponse, error) {`,
-		`type ConnectedBillingClientEvents struct {`,
-		`client.RegisterEvent[InvoiceUpdated](conn, "billing.invoice.updated")`,
-		`func (c *ConnectedBillingClient) Close() error {`,
+		`type LatchClient struct {`,
+		`type ConnectedLatchClient struct {`,
+		`func (c *ConnectedLatchClient) Get(ctx context.Context, req GetInvoiceRequest)`,
+		`client.Call[GetInvoiceResponse](ctx, c.conn, "billing.invoice.get", req)`,
+		`client.Call[UserGetResponse](ctx, c.conn, "user.get", req)`,
+		`client.RegisterEvent[InvoiceUpdated](conn)`,
+		`func (c *ConnectedLatchClient) Close() error {`,
 	}
 	for _, want := range wantClientSnippets {
 		if !bytes.Contains([]byte(client), []byte(want)) {
@@ -188,18 +185,5 @@ func TestEventGetterCollisionRejected(t *testing.T) {
 
 	if _, err := Generate(p, Options{}); err == nil {
 		t.Fatalf("expected event getter name collision to be rejected")
-	}
-}
-
-func TestMethodNamespaceLeafCollisionRejected(t *testing.T) {
-	p := buildFixtureProtocol(t)
-	p.Methods = append(p.Methods, protocol.Method{
-		Name:         "billing.invoice",
-		RequestType:  p.Methods[0].RequestType,
-		ResponseType: p.Methods[0].ResponseType,
-	})
-
-	if _, err := Generate(p, Options{}); err == nil {
-		t.Fatalf("expected method namespace collision (billing.invoice vs billing.invoice.get) to be rejected")
 	}
 }

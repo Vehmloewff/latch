@@ -1,5 +1,5 @@
 // Package testutil provides a minimal handwritten WebSocket client for
-// exercising the Latchwire wire protocol directly in tests, without
+// exercising the Latch wire protocol directly in tests, without
 // depending on any generated client.
 package testutil
 
@@ -16,7 +16,7 @@ import (
 
 const defaultTimeout = 5 * time.Second
 
-// Client is a raw Latchwire WebSocket client for tests.
+// Client is a raw Latch WebSocket client for tests.
 type Client struct {
 	t  *testing.T
 	ws *websocket.Conn

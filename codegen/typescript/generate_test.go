@@ -123,16 +123,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 
 	client := string(files["client.ts"])
 	wantClientSnippets := []string{
-		`readonly billing = {`,
-		`invoice: {`,
-		`get: (req: GetInvoiceRequest): Promise<GetInvoiceResponse> => this.call("billing.invoice.get", req),`,
-		`readonly user = {`,
-		`get: (req: UserGetRequest): Promise<UserGetResponse> => this.call("user.get", req),`,
-		`readonly events = {`,
-		`billingInvoiceUpdated: new EventStream<InvoiceUpdated>(),`,
-		`case "billing.invoice.updated":`,
-		`export class BillingClient {`,
-		`export class ConnectedBillingClient extends BaseConnection {`,
+		`billingInvoiceGet(req: GetInvoiceRequest): Promise<GetInvoiceResponse>`,
+		`userGet(req: UserGetRequest): Promise<UserGetResponse>`,
+		`this.call("billing.invoice.get", req)`,
+		`this.call("user.get", req)`,
+		`readonly events = new EventStream<InvoiceUpdated>()`,
+		`export class LatchClient {`,
+		`export class ConnectedLatchClient extends BaseConnection {`,
 	}
 	for _, want := range wantClientSnippets {
 		if !bytes.Contains([]byte(client), []byte(want)) {
@@ -177,18 +174,5 @@ func TestEventPropertyCollisionRejected(t *testing.T) {
 
 	if _, err := Generate(p, Options{}); err == nil {
 		t.Fatalf("expected event property name collision to be rejected")
-	}
-}
-
-func TestMethodNamespaceLeafCollisionRejected(t *testing.T) {
-	p := buildFixtureProtocol(t)
-	p.Methods = append(p.Methods, protocol.Method{
-		Name:         "billing.invoice",
-		RequestType:  p.Methods[0].RequestType,
-		ResponseType: p.Methods[0].ResponseType,
-	})
-
-	if _, err := Generate(p, Options{}); err == nil {
-		t.Fatalf("expected method namespace collision (billing.invoice vs billing.invoice.get) to be rejected")
 	}
 }
