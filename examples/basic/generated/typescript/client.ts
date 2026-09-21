@@ -20,13 +20,13 @@ export class LatchwireClient {
 
 export class ConnectedLatchwireClient extends BaseConnection {
   profileGet(req: ProfileGetRequest): Promise<ProfileGetResponse> {
-    return this.call("profileGet", req);
+    return this.call("profile_get", req);
   }
   roomList(req: ListRoomsRequest): Promise<ListRoomsResponse> {
-    return this.call("roomList", req);
+    return this.call("room_list", req);
   }
   roomSubscribe(req: SubscribeRequest): Promise<SubscribeResponse> {
-    return this.call("roomSubscribe", req);
+    return this.call("room_subscribe", req);
   }
 
   readonly events = new EventStream<Event>();

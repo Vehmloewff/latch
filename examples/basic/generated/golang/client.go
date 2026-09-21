@@ -40,15 +40,15 @@ type ConnectedLatchwireClient struct {
 }
 
 func (c *ConnectedLatchwireClient) ProfileGet(ctx context.Context, req ProfileGetRequest) (ProfileGetResponse, error) {
-	return client.Call[ProfileGetResponse](ctx, c.conn, "profileGet", req)
+	return client.Call[ProfileGetResponse](ctx, c.conn, "profile_get", req)
 }
 
 func (c *ConnectedLatchwireClient) RoomList(ctx context.Context, req ListRoomsRequest) (ListRoomsResponse, error) {
-	return client.Call[ListRoomsResponse](ctx, c.conn, "roomList", req)
+	return client.Call[ListRoomsResponse](ctx, c.conn, "room_list", req)
 }
 
 func (c *ConnectedLatchwireClient) RoomSubscribe(ctx context.Context, req SubscribeRequest) (SubscribeResponse, error) {
-	return client.Call[SubscribeResponse](ctx, c.conn, "roomSubscribe", req)
+	return client.Call[SubscribeResponse](ctx, c.conn, "room_subscribe", req)
 }
 
 // Events returns the single server-to-client event stream.

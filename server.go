@@ -156,11 +156,8 @@ func (s *Server[S]) Register(name string, handler any) {
 	if s.finalized {
 		panic(fmt.Errorf("latchwire: cannot register method %q: server is already finalized", name))
 	}
-	if name == "" {
-		panic(fmt.Errorf("latchwire: method name must not be empty"))
-	}
-	if !names.IsIdentifier(name) {
-		panic(fmt.Errorf("latchwire: method name %q must be a valid identifier", name))
+	if !names.IsSnakeCase(name) {
+		panic(fmt.Errorf("latchwire: method name %q must be snake_case", name))
 	}
 	if _, exists := s.methods[name]; exists {
 		panic(fmt.Errorf("latchwire: method %q is already registered", name))

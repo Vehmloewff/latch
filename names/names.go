@@ -9,9 +9,35 @@ import (
 	"strings"
 )
 
-// IsIdentifier reports whether s is a non-empty ASCII identifier. Keeping the
-// rule language-neutral means the same method can be emitted as a method in
-// Go, TypeScript, and Dart.
+// IsSnakeCase reports whether s is a non-empty ASCII snake_case name. Names
+// must start with a lowercase letter, contain only lowercase letters, digits,
+// and underscores, and may not contain leading, trailing, or repeated
+// underscores.
+func IsSnakeCase(s string) bool {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	previousUnderscore := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_':
+			if previousUnderscore {
+				return false
+			}
+			previousUnderscore = true
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+			previousUnderscore = false
+		default:
+			return false
+		}
+	}
+	return !previousUnderscore
+}
+
+// IsIdentifier reports whether s is a non-empty ASCII identifier.
+//
+// Deprecated: method names must use IsSnakeCase.
 func IsIdentifier(s string) bool {
 	if s == "" {
 		return false
@@ -34,8 +60,8 @@ func IsIdentifier(s string) bool {
 // emits them as source-level methods.
 func ValidateIdentifiers(methodNames []string) error {
 	for _, name := range methodNames {
-		if !IsIdentifier(name) {
-			return fmt.Errorf("method name %q must be a valid identifier", name)
+		if !IsSnakeCase(name) {
+			return fmt.Errorf("method name %q must be snake_case", name)
 		}
 	}
 	return nil

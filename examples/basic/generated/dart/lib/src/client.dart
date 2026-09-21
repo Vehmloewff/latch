@@ -26,22 +26,22 @@ class ConnectedLatchwireClient extends BaseConnection {
   ConnectedLatchwireClient(HandshakeResult handshake) : super(handshake);
 
   Future<ProfileGetResponse> profileGet(ProfileGetRequest req) => call(
-    "profileGet",
-    req.toJson(),
-    (raw) => ProfileGetResponse.fromJson(raw as Map<String, dynamic>),
-  );
+        "profile_get",
+        req.toJson(),
+        (raw) => ProfileGetResponse.fromJson(raw as Map<String, dynamic>),
+      );
 
   Future<ListRoomsResponse> roomList(ListRoomsRequest req) => call(
-    "roomList",
-    req.toJson(),
-    (raw) => ListRoomsResponse.fromJson(raw as Map<String, dynamic>),
-  );
+        "room_list",
+        req.toJson(),
+        (raw) => ListRoomsResponse.fromJson(raw as Map<String, dynamic>),
+      );
 
   Future<SubscribeResponse> roomSubscribe(SubscribeRequest req) => call(
-    "roomSubscribe",
-    req.toJson(),
-    (raw) => SubscribeResponse.fromJson(raw as Map<String, dynamic>),
-  );
+        "room_subscribe",
+        req.toJson(),
+        (raw) => SubscribeResponse.fromJson(raw as Map<String, dynamic>),
+      );
 
   @override
   void dispatchEvent(dynamic payload) {

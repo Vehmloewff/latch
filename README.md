@@ -62,7 +62,7 @@ func buildAPI() *latchwire.Server[State] {
         return State{}, nil
     })
 
-    server.Register("mathAdd", func(
+    server.Register("math_add", func(
         ctx context.Context,
         state State,
         req AddRequest,
@@ -158,9 +158,11 @@ if err != nil {
 fmt.Println(result.Result)
 ```
 
-Method names, request types, response types, and event payloads are generated
-from the server definition. Client code never needs to manually cast responses
-or maintain a second copy of the protocol.
+Method names are registered in `snake_case` and generated in each client
+language's conventional style. For example, `math_add` becomes `mathAdd` in
+TypeScript and Dart, and `MathAdd` in Go. Request types, response types, and
+event payloads are generated from the server definition, so client code never
+needs to manually cast responses or maintain a second copy of the protocol.
 
 ## Supported types
 

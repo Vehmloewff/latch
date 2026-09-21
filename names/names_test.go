@@ -29,6 +29,22 @@ func TestCamelCase(t *testing.T) {
 	}
 }
 
+func TestIsSnakeCase(t *testing.T) {
+	valid := []string{"math_add", "room_subscribe", "v2_status", "a1"}
+	for _, name := range valid {
+		if !IsSnakeCase(name) {
+			t.Errorf("IsSnakeCase(%q) = false, want true", name)
+		}
+	}
+
+	invalid := []string{"", "MathAdd", "mathAdd", "math.add", "_math", "math_", "math__add", "math-add", "math add"}
+	for _, name := range invalid {
+		if IsSnakeCase(name) {
+			t.Errorf("IsSnakeCase(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestSegments(t *testing.T) {
 	got := Segments("billing.invoice.get")
 	want := []string{"billing", "invoice", "get"}

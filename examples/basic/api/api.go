@@ -12,7 +12,7 @@ package api
 import (
 	"context"
 
-	"github.com/vehmloewff/latch"
+	latchwire "github.com/vehmloewff/latch"
 )
 
 // SubscribeRequest is the payload for the "room.subscribe" method.
@@ -117,7 +117,7 @@ func Build() *latchwire.Server[State] {
 		return State{ConnectedPath: conn.Request().URL.Path}, nil
 	})
 
-	lw.Register("roomSubscribe", func(
+	lw.Register("room_subscribe", func(
 		ctx context.Context,
 		state State,
 		req SubscribeRequest,
@@ -125,7 +125,7 @@ func Build() *latchwire.Server[State] {
 		return SubscribeResponse{OK: true}, nil
 	})
 
-	lw.Register("roomList", func(
+	lw.Register("room_list", func(
 		ctx context.Context,
 		state State,
 		req ListRoomsRequest,
@@ -133,7 +133,7 @@ func Build() *latchwire.Server[State] {
 		return ListRoomsResponse{Rooms: []string{"general", "lobby", "random"}}, nil
 	})
 
-	lw.Register("profileGet", func(ctx context.Context, state State, req ProfileGetRequest) (ProfileGetResponse, error) {
+	lw.Register("profile_get", func(ctx context.Context, state State, req ProfileGetRequest) (ProfileGetResponse, error) {
 		if req.UserID == "missing" {
 			return ProfileGetResponse{}, latchwire.NewError("not_found", "user not found")
 		}
