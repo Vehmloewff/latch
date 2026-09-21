@@ -1,0 +1,10 @@
+# Shared binary fixtures. Hex is canonical wire/binary.go output.
+int_minus_one 03 01
+int_64 03 80 01
+uint_300 04 ac 02
+float32_one 05 00 00 80 3f
+float64_one 06 00 00 00 00 00 00 f0 3f
+string_hello 07 05 68 65 6c 6c 6f
+bytes_binary 08 03 00 ff 7f
+struct_nested 09 04 01 07 05 68 65 6c 6c 6f 02 03 25 03 0a 03 00 02 06 00 00 00 00 00 00 f8 3f 04 08 03 01 02 ff
+envelope_response 01 04 00 02 34 32 00 00 03 01 02 03 00 01 78

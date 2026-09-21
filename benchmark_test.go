@@ -68,7 +68,7 @@ func BenchmarkRequestRoundTrip(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		id := strconv.Itoa(i)
 		raw, _ := json.Marshal(benchmarkRequest{A: i, B: 1})
-		send(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: "math_add", Payload: raw})
+		send(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: "math_add", Payload: []byte(raw)})
 		resp := recv()
 		if resp.Type != wire.FrameResponse || resp.ID != id {
 			b.Fatalf("unexpected response: %+v", resp)

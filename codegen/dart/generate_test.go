@@ -141,6 +141,15 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		`Future<UserGetResponse> userGet`,
 		`"billing.invoice.get"`,
 		`"user.get"`,
+		`class BinaryEnvelope`,
+		`abstract final class BinaryCodec`,
+		`payload: BinaryCodec.encode(payload)`,
+		`StructValue toBinary()`,
+	}
+	for _, forbidden := range []string{"jsonEncode", "jsonDecode", "JSON.stringify", "JSON.parse"} {
+		if bytes.Contains([]byte(client), []byte(forbidden)) {
+			t.Errorf("generated client.dart still contains JSON transport operation %q", forbidden)
+		}
 	}
 	for _, want := range wantClientSnippets {
 		if !bytes.Contains([]byte(client), []byte(want)) {

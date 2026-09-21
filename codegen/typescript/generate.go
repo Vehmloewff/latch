@@ -6,6 +6,7 @@
 package typescript
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,12 @@ import (
 	"github.com/vehmloewff/latch/names"
 	"github.com/vehmloewff/latch/protocol"
 )
+
+// binaryRuntimeBody is the tested standalone codec embedded into every generated
+// client. Generated clients never import the development subproject.
+//
+//go:embed binary_runtime/codec.ts
+var binaryRuntimeBody string
 
 // Options configures TypeScript generation.
 type Options struct {
@@ -54,7 +61,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	typesBody := generateTypesFile(p, typeNames)
 	clientBody = stripImports(clientBody)
 	return map[string][]byte{
-		"client.ts": []byte(header + runtimeBody + "\n" + typesBody + "\n" + clientBody),
+		"client.ts": []byte(header + runtimeBody + "\n" + binaryRuntimeBody + "\n" + typesBody + "\n" + clientBody),
 	}, nil
 }
 

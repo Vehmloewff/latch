@@ -1,15 +1,11 @@
-// Package wire defines Latch's on-the-wire JSON envelope. Every
-// WebSocket text message, in both directions, is exactly one Envelope.
+// Package wire defines Latch's binary WebSocket protocol. Every runtime frame
+// is a binary Envelope encoded with MarshalBinary.
 package wire
-
-import "encoding/json"
 
 // FrameType discriminates the kind of Envelope.
 type FrameType string
 
 const (
-	// FrameConnect and FrameConnected are retained for decoding older
-	// protocol traffic. Current clients do not send or expect either frame.
 	FrameConnect         FrameType = "connect"
 	FrameConnected       FrameType = "connected"
 	FrameRequest         FrameType = "request"
@@ -19,33 +15,21 @@ const (
 	FrameConnectionError FrameType = "connection_error"
 )
 
-// Error is the legacy structured error shape retained for compatibility with
-// older protocol users. New frames use the safe Error message string below.
+// Error is the structured application error carried by the binary protocol.
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string
+	Message string
 }
 
 // Envelope is the single discriminated-union message shape used for every
-// frame type. Fields irrelevant to a given Type are simply omitted.
+// binary frame. Fields irrelevant to a given Type are encoded as empty values.
 type Envelope struct {
-	Type FrameType `json:"type"`
-
-	// Version is retained for protocol metadata in server-generated frames.
-	Version string `json:"version,omitempty"`
-	// request / response / error
-	ID     string `json:"id,omitempty"`
-	Method string `json:"method,omitempty"`
-
-	// Event is ignored by current runtimes. It is retained so older clients
-	// can decode envelopes while migrating to the single event stream.
-	Event string `json:"event,omitempty"`
-
-	// request, response, or event payload
-	Payload json.RawMessage `json:"payload,omitempty"`
-
-	// error / connection_error. ErrorCode preserves the safe application
-	// error code while Error carries its human-readable message.
-	Error     string `json:"error,omitempty"`
-	ErrorCode string `json:"errorCode,omitempty"`
+	Type      FrameType
+	Version   string
+	ID        string
+	Method    string
+	Event     string
+	Payload   []byte
+	Error     string
+	ErrorCode string
 }

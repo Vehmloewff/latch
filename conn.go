@@ -2,7 +2,7 @@ package latch
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,7 +11,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latch/jsonschema"
 	"github.com/vehmloewff/latch/wire"
 )
 
@@ -40,6 +39,7 @@ type outboundFrame struct {
 type Conn struct {
 	server connServer
 	ws     *websocket.Conn
+	binary bool
 	logger *slog.Logger
 
 	request *http.Request
@@ -65,8 +65,6 @@ type Conn struct {
 }
 
 type connServer interface {
-	eventValidator() *jsonschema.Validator
-	options() Options
 	untrack(*Conn)
 }
 
@@ -81,6 +79,7 @@ func newConn[S any](srv *Server[S], ws *websocket.Conn, req *http.Request) *Conn
 	c := &Conn{
 		server:   srv,
 		ws:       ws,
+		binary:   true,
 		logger:   srv.opts.Logger,
 		request:  req.Clone(ctx),
 		ctx:      ctx,
@@ -181,17 +180,9 @@ func (c *Conn) sendEventFrame(payload any) error {
 	default:
 	}
 
-	raw, err := json.Marshal(payload)
+	raw, err := wire.Encode(payload)
 	if err != nil {
-		return fmt.Errorf("latch: marshal event payload: %w", err)
-	}
-
-	if c.server.options().ValidateResponses {
-		if v := c.server.eventValidator(); v != nil {
-			if err := v.ValidateJSON(raw); err != nil {
-				return fmt.Errorf("latch: event payload failed schema validation: %w", err)
-			}
-		}
+		return fmt.Errorf("latch: encode event payload: %w", err)
 	}
 
 	env := wire.Envelope{Type: wire.FrameEvent, Payload: raw}
@@ -256,13 +247,13 @@ func (c *Conn) writePump() {
 }
 
 func (c *Conn) writeEnvelope(env wire.Envelope) error {
-	raw, err := json.Marshal(env)
+	raw, err := env.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
-	return c.ws.Write(ctx, websocket.MessageText, raw)
+	return c.ws.Write(ctx, websocket.MessageBinary, raw)
 }
 
 func (c *Conn) logf(level slog.Level, msg string, args ...any) {

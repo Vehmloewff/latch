@@ -1,9 +1,8 @@
 // Package latch is a Go-first, strongly typed, bidirectional protocol
 // framework over WebSockets. A developer registers Go handler functions and
-// event definitions on a Server; Latch reflects over those registrations
-// to validate connections and requests against generated JSON Schema, and to
-// generate fully type-safe TypeScript, Dart, and Go clients. See the
-// package README for the complete walkthrough.
+// event definitions on a Server; Latch reflects over those registrations to
+// build the binary protocol IR and generate fully type-safe TypeScript, Dart,
+// and Go clients. See the package README for the complete walkthrough.
 package latch
 
 import (
@@ -15,7 +14,6 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/vehmloewff/latch/jsonschema"
 	"github.com/vehmloewff/latch/names"
 	"github.com/vehmloewff/latch/protocol"
 	"github.com/vehmloewff/latch/reflectapi"
@@ -50,13 +48,6 @@ type Options struct {
 	// message. Defaults to DefaultMaxMessageBytes. Oversized messages close
 	// the connection.
 	MaxMessageBytes int64
-
-	// ValidateResponses, when true, marshals and validates every outgoing
-	// response and event payload against its generated JSON Schema before
-	// sending it. Intended for tests and development; adds overhead not
-	// needed in production because the Go type system already guarantees
-	// response shape.
-	ValidateResponses bool
 
 	// Debug, when true, includes the underlying Go error string in
 	// ErrCodeInternal wire errors. Never enable this in production: it can
@@ -109,7 +100,6 @@ type Server[S any] struct {
 
 	eventType reflect.Type
 	eventRef  protocol.TypeRef
-	eventVal  *jsonschema.Validator
 
 	methods     map[string]*methodEntry
 	methodOrder []string
@@ -357,45 +347,8 @@ func (s *Server[S]) finalizeLocked() error {
 	if _, err := names.AssignTypeNames(s.ir.Types); err != nil {
 		return err
 	}
-	eventDoc := jsonschema.BuildDocument(s.ir, eventRef)
-	eventVal, err := jsonschema.Compile("latch://event", eventDoc)
-	if err != nil {
-		return fmt.Errorf("latch: compile event schema: %w", err)
-	}
-	s.eventVal = eventVal
-
-	for _, name := range sortedMethods {
-		m := s.methods[name]
-
-		reqDoc := jsonschema.BuildDocument(s.ir, m.requestRef)
-		reqVal, err := jsonschema.Compile("latch://method/"+name+"/request", reqDoc)
-		if err != nil {
-			return fmt.Errorf("latch: compile method %q request schema: %w", name, err)
-		}
-		m.requestValidator = reqVal
-
-		if s.opts.ValidateResponses {
-			respDoc := jsonschema.BuildDocument(s.ir, m.responseRef)
-			respVal, err := jsonschema.Compile("latch://method/"+name+"/response", respDoc)
-			if err != nil {
-				return fmt.Errorf("latch: compile method %q response schema: %w", name, err)
-			}
-			m.responseValidator = respVal
-		}
-	}
 
 	return nil
-}
-
-// eventValidator returns the compiled validator for the one event payload.
-func (s *Server[S]) eventValidator() *jsonschema.Validator {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.eventVal
-}
-
-func (s *Server[S]) options() Options {
-	return s.opts
 }
 
 func (s *Server[S]) track(c *Conn) {

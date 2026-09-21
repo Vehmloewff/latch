@@ -1,16 +1,20 @@
 package dart
 
-// runtimeBody is the language runtime shared by every generated Dart
-// client: WebSocket transport (via package:web_socket_channel, which
-// works across the Dart VM, Flutter, and web), connection setup,
-// request-ID correlation, and event dispatch. It never depends on any
-// particular protocol, so it is emitted verbatim rather than templated.
-const runtimeBody = `import 'dart:async';
+import _ "embed"
+
+// binaryRuntimeSource is the tested standalone codec copied into the
+// generator package and embedded into every generated client. Generated
+// clients therefore have no dependency on codegen/dart/binary_runtime.
+//
+//go:embed binary_runtime.dart
+var binaryRuntimeSource string
+
+var runtimeBody = `import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-/// Thrown for every RPC rejection and connect failure.
 class LatchError extends Error {
   final String code;
   final String message;
@@ -21,9 +25,6 @@ class LatchError extends Error {
   String toString() => 'LatchError($code): $message';
 }
 
-/// Thrown when a value received from the server does not match a
-/// generated enum's known wire values. See docs/design-notes.md
-/// ("Dart unknown enum values").
 class LatchDecodeException implements Exception {
   final String message;
 
@@ -39,39 +40,31 @@ class ClientOptions {
   const ClientOptions(this.url);
 }
 
-/// The live channel plus any frames that arrived before a generated
-/// Connected*Client's constructor could install its message handler.
 class HandshakeResult {
   final WebSocketChannel channel;
   final StreamSubscription<dynamic> subscription;
-  final List<String> bufferedMessages;
+  final List<Uint8List> bufferedMessages;
 
   HandshakeResult(this.channel, this.subscription, this.bufferedMessages);
 }
 
-/// Opens the WebSocket. Latch has no client handshake; the server runs
-/// OnConnect for the HTTP upgrade request.
-///
-/// package:web_socket_channel's channel.stream is single-subscription, so
-/// only one Dart Stream.listen() call is ever legal on it - unlike a
-/// browser WebSocket's onmessage, which can simply be reassigned. This
-/// keeps the ONE subscription created here alive for the connection's
-/// entire lifetime and hands it, not the raw stream, to HandshakeResult;
-/// BaseConnection takes over by replacing this subscription's callbacks
-/// (subscription.onData/onDone/onError) rather than calling listen() again.
-Future<HandshakeResult> connectSocket(
-  Uri url,
-  String version,
-) async {
+Uint8List _messageBytes(dynamic data) {
+  if (data is Uint8List) return Uint8List.fromList(data);
+  if (data is List<int>) return Uint8List.fromList(data);
+  throw BinaryMalformedError('WebSocket message is not binary');
+}
+
+Future<HandshakeResult> connectSocket(Uri url, String version) async {
   final query = Map<String, String>.from(url.queryParameters);
   query['version'] = version;
+  query['binary'] = '1';
   final channel = WebSocketChannel.connect(url.replace(queryParameters: query));
   await channel.ready;
 
-  final bufferedMessages = <String>[];
+  final bufferedMessages = <Uint8List>[];
   late StreamSubscription<dynamic> sub;
   sub = channel.stream.listen((dynamic data) {
-    bufferedMessages.add(data as String);
+    bufferedMessages.add(_messageBytes(data));
   });
   return HandshakeResult(channel, sub, bufferedMessages);
 }
@@ -82,11 +75,6 @@ class _PendingRequest {
   _PendingRequest(this.completer);
 }
 
-/// Base class for every generated "Connected*Client". Handles the
-/// WebSocket message loop, request/response correlation by ID, and
-/// dispatch of connection_error / close conditions. Generated subclasses
-/// add typed method namespaces (backed by call()) and typed event streams
-/// (backed by dispatchEvent()).
 abstract class BaseConnection {
   final WebSocketChannel _channel;
   final StreamSubscription<dynamic> _subscription;
@@ -97,21 +85,11 @@ abstract class BaseConnection {
   BaseConnection(HandshakeResult handshake)
       : _channel = handshake.channel,
         _subscription = handshake.subscription {
-    // Take over the single subscription connectSocket already created
-    // (see HandshakeResult's doc comment) by replacing its callbacks,
-    // rather than calling channel.stream.listen() again - which would
-    // throw "Stream has already been listened to".
     _subscription
       ..onData(_handleMessage)
       ..onDone(_handleClose)
       ..onError((Object _, StackTrace __) {});
 
-    // See docs/design-notes.md ("TypeScript event callback scheduling"),
-    // which applies identically here: replay is deferred with a real Timer
-    // (Dart's macrotask/event-queue task), not scheduleMicrotask, so it
-    // reliably runs after the caller's own code immediately following an
-    // awaited client.connect(...) call - most importantly a synchronous
-    // events.x.listen(...) call in the same microtask chain.
     if (handshake.bufferedMessages.isNotEmpty) {
       Timer(Duration.zero, () {
         for (final data in handshake.bufferedMessages) {
@@ -121,63 +99,77 @@ abstract class BaseConnection {
     }
   }
 
-  /// True once the connection has closed, for any reason.
   bool get closed => _closed;
 
-  /// Closes the connection. Safe to call more than once.
   void close() {
     if (_closed) return;
     _channel.sink.close(1000);
     _handleClose();
   }
 
-  /// @internal used by generated method namespaces.
   Future<TResp> call<TResp>(
     String method,
-    Map<String, dynamic> payload,
-    TResp Function(dynamic raw) decode,
+    Object? payload,
+    TResp Function(Object? raw) decode,
   ) {
     if (_closed) {
-      return Future<TResp>.error(LatchError('connection_closed', 'the connection is closed'));
+      return Future<TResp>.error(
+        LatchError('connection_closed', 'the connection is closed'),
+      );
     }
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
     _pending[id] = _PendingRequest(completer);
-    _channel.sink.add(jsonEncode({'type': 'request', 'id': id, 'method': method, 'payload': payload}));
+    final request = BinaryEnvelope(
+      type: FrameCode.request,
+      id: id,
+      method: method,
+      payload: BinaryCodec.encode(payload),
+    );
+    _channel.sink.add(request.encode());
     return completer.future.then((raw) => decode(raw));
   }
 
-  /// Implemented by the generated subclass to decode the single event stream.
-  void dispatchEvent(dynamic payload);
+  void dispatchEvent(Object? payload);
 
   void _handleMessage(dynamic data) {
-    Map<String, dynamic> env;
+    late final BinaryEnvelope env;
     try {
-      env = jsonDecode(data as String) as Map<String, dynamic>;
+      env = BinaryEnvelope.decode(_messageBytes(data));
     } catch (_) {
       return;
     }
 
-    switch (env['type']) {
-      case 'response':
-        final id = env['id'] as String?;
-        final pending = id != null ? _pending.remove(id) : null;
-        pending?.completer.complete(env['payload']);
+    switch (env.type) {
+      case FrameCode.response:
+        final pending = _pending.remove(env.id);
+        if (pending != null) {
+          try {
+            pending.completer.complete(BinaryCodec.decode(env.payload));
+          } catch (error, stack) {
+            pending.completer.completeError(error, stack);
+          }
+        }
         break;
-      case 'error':
-        final id = env['id'] as String?;
-        final pending = id != null ? _pending.remove(id) : null;
-        final message = env['error'] as String? ?? 'internal error';
-        final code = env['errorCode'] as String? ?? 'internal_error';
-        pending?.completer.completeError(LatchError(code, message));
+      case FrameCode.error:
+        final pending = _pending.remove(env.id);
+        pending?.completer.completeError(
+          LatchError(
+            env.errorCode.isEmpty ? 'internal_error' : env.errorCode,
+            env.error.isEmpty ? 'internal error' : env.error,
+          ),
+        );
         break;
-      case 'event':
-        dispatchEvent(env['payload']);
+      case FrameCode.event:
+        try {
+          dispatchEvent(BinaryCodec.decode(env.payload));
+        } catch (_) {}
         break;
-      case 'connection_error':
-        final message = env['error'] as String? ?? 'connection error';
-        final code = env['errorCode'] as String? ?? 'internal_error';
-        _failAllPending(LatchError(code, message));
+      case FrameCode.connectionError:
+        _failAllPending(LatchError(
+          env.errorCode.isEmpty ? 'internal_error' : env.errorCode,
+          env.error.isEmpty ? 'connection error' : env.error,
+        ));
         _handleClose();
         break;
       default:
@@ -193,11 +185,9 @@ abstract class BaseConnection {
 
   void _failAllPending(LatchError err) {
     for (final pending in _pending.values) {
-      if (!pending.completer.isCompleted) {
-        pending.completer.completeError(err);
-      }
+      if (!pending.completer.isCompleted) pending.completer.completeError(err);
     }
     _pending.clear();
   }
 }
-`
+` + "\n" + stripImports(binaryRuntimeSource)

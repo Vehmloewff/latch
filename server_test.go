@@ -82,13 +82,13 @@ func TestServerRejectsInvalidRequestAndUnknownMethod(t *testing.T) {
 		t.Fatalf("expected initial event, got %+v", event)
 	}
 
-	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: json.RawMessage(`{"a":"bad","b":2}`)})
+	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "1", Method: "math_add", Payload: []byte(`{"a":"bad","b":2}`)})
 	invalid := client.Recv()
 	if invalid.Type != wire.FrameError || invalid.Error != "request payload failed schema validation" {
 		t.Fatalf("invalid request response = %+v", invalid)
 	}
 
-	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "2", Method: "missing_method", Payload: json.RawMessage(`{}`)})
+	client.Send(wire.Envelope{Type: wire.FrameRequest, ID: "2", Method: "missing_method", Payload: []byte(`{}`)})
 	unknown := client.Recv()
 	if unknown.Type != wire.FrameError {
 		t.Fatalf("unknown method response = %+v", unknown)

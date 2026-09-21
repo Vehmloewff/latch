@@ -6,16 +6,23 @@ package typescript
 // protocol, so it is emitted verbatim rather than templated.
 const runtimeBody = `export type WebSocketFactory = (url: string) => WebSocketLike;
 
+type BinaryMessage = ArrayBuffer | Uint8Array;
+
 /** The minimal WebSocket surface Latch's runtime needs, satisfied by
  * both the browser's global WebSocket and Node/Bun/Deno implementations. */
 export interface WebSocketLike {
   readonly readyState: number;
+  binaryType?: string;
   onopen: ((ev: unknown) => void) | null;
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
-  onmessage: ((ev: { data: string }) => void) | null;
-  send(data: string): void;
+  onmessage: ((ev: { data: BinaryMessage }) => void) | null;
+  send(data: Uint8Array): void;
   close(code?: number, reason?: string): void;
+}
+
+function asBytes(data: BinaryMessage): Uint8Array {
+  return data instanceof Uint8Array ? data : new Uint8Array(data);
 }
 
 /** Thrown for every RPC rejection and connect failure. */
@@ -38,20 +45,11 @@ export interface ClientOptions {
   webSocketFactory?: WebSocketFactory;
 }
 
-interface WireEnvelope {
-  type: string;
-  protocol?: string;
-  version?: string;
-  id?: string;
-  method?: string;
-  payload?: unknown;
-  error?: string;
-  errorCode?: string;
-}
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (err: unknown) => void;
+  decode: (data: Uint8Array) => unknown;
 }
 
 /** A single typed server-to-client event stream. Listener callbacks are
@@ -94,7 +92,7 @@ export abstract class BaseConnection {
     // Install the real handler before replaying anything, so a message
     // that arrives while we're replaying is still queued in order rather
     // than raced against this constructor.
-    this.ws.onmessage = (ev) => this.handleMessage(ev.data);
+    this.ws.onmessage = (ev) => this.handleMessage(asBytes(ev.data));
     this.ws.onclose = () => this.handleClose();
     this.ws.onerror = () => {
       /* surfaced to callers via rejected/failed pending requests */
@@ -130,35 +128,50 @@ export abstract class BaseConnection {
   }
 
   /** @internal used by generated method namespaces. */
-  protected call<TResp>(method: string, payload: unknown): Promise<TResp> {
+  protected call<TResp>(
+    method: string,
+    payload: unknown,
+    encodePayload: (value: unknown) => Uint8Array = encodeValue,
+    decodePayload: (data: Uint8Array) => unknown = decodeValue,
+  ): Promise<TResp> {
     if (this._closed) {
       return Promise.reject(connectionClosedError());
     }
     const id = String(this.nextId++);
     return new Promise<TResp>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.ws.send(JSON.stringify({ type: "request", id, method, payload }));
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, decode: decodePayload });
+      try {
+        this.ws.send(encodeEnvelope({ type: "request", id, method, payload: encodePayload(payload) }));
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
   /** Implemented by the generated subclass to route "event" frames to the
    * right typed EventStream. */
-  protected abstract dispatchEvent(env: { event?: string; payload?: unknown }): void;
+  protected abstract dispatchEvent(env: { event?: string; payload?: Uint8Array }): void;
 
-  private handleMessage(data: string): void {
-    let env: WireEnvelope;
+  private handleMessage(data: Uint8Array): void {
+    let env: Envelope;
     try {
-      env = JSON.parse(data);
+      env = decodeEnvelope(data);
     } catch {
       return;
     }
+    const payload = env.payload;
 
     switch (env.type) {
       case "response": {
         const p = env.id ? this.pending.get(env.id) : undefined;
         if (p && env.id) {
           this.pending.delete(env.id);
-          p.resolve(env.payload);
+          try {
+            p.resolve(payload && payload.length > 0 ? p.decode(payload) : undefined);
+          } catch (error) {
+            p.reject(error);
+          }
         }
         break;
       }
@@ -171,7 +184,7 @@ export abstract class BaseConnection {
         break;
       }
       case "event":
-        this.dispatchEvent(env);
+        this.dispatchEvent({ event: env.event, payload });
         break;
       case "connection_error":
         this.failAllPending(new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error"));
@@ -210,7 +223,7 @@ function defaultWebSocketFactory(url: string): WebSocketLike {
  * install its message handler. */
 export interface HandshakeResult {
   ws: WebSocketLike;
-  bufferedMessages: string[];
+  bufferedMessages: Uint8Array[];
 }
 
 /** Opens the WebSocket and resolves once it is open. Latch has no client
@@ -222,8 +235,10 @@ export function connectSocket(
 ): Promise<HandshakeResult> {
   const target = new URL(url);
   target.searchParams.set("version", version);
+  target.searchParams.set("binary", "1");
   const ws = (factory ?? defaultWebSocketFactory)(target.toString());
-  const bufferedMessages: string[] = [];
+  ws.binaryType = "arraybuffer";
+  const bufferedMessages: Uint8Array[] = [];
 
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
@@ -247,21 +262,21 @@ export function connectSocket(
     };
 
     ws.onmessage = (ev) => {
+      const data = asBytes(ev.data);
       if (settled) {
-        // The socket is open, but BaseConnection hasn't
-        // installed its own handler yet (same synchronous read as
-        // installed its handler (or is in a pending microtask). Buffer for replay.
-        bufferedMessages.push(ev.data);
+        // The socket is open, but BaseConnection has not installed its handler
+        // yet. Buffer binary frames for replay.
+        bufferedMessages.push(data);
         return;
       }
 
-      let env: WireEnvelope;
+      let env: Envelope;
       try {
-        env = JSON.parse(ev.data);
+        env = decodeEnvelope(data);
       } catch {
         settled = true;
-        ws.close(1002, "malformed event before setup");
-        reject(new Error("Latch: malformed response during setup"));
+        ws.close(1002, "malformed binary event before setup");
+        reject(new Error("Latch: malformed binary response during setup"));
         return;
       }
 

@@ -64,9 +64,8 @@ type GenerateOptions struct {
 }
 
 // Schema finalizes the server (if necessary) and returns the normalized
-// protocol schema used by runtime validation and client generators. The
-// returned schema is immutable from the server's point of view and should be
-// treated as read-only by callers.
+// protocol IR consumed by client generators. It is an in-process Go value;
+// Latch does not serialize it as a manifest or use it for wire validation.
 func (s *Server[S]) Schema() (*protocol.Protocol, error) {
 	if err := s.finalize(); err != nil {
 		return nil, err
@@ -77,9 +76,8 @@ func (s *Server[S]) Schema() (*protocol.Protocol, error) {
 	return s.ir, nil
 }
 
-// GenerateSchema is an explicit alias for Schema. It is useful when the
-// schema is being obtained as an input to custom tooling or a custom client
-// generator.
+// GenerateSchema is an explicit alias for Schema retained for source
+// compatibility. It returns the in-process protocol IR.
 func (s *Server[S]) GenerateSchema() (*protocol.Protocol, error) {
 	return s.Schema()
 }

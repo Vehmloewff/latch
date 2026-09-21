@@ -7,7 +7,7 @@ package client
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
 	"net/url"
 	"sync"
@@ -36,7 +36,7 @@ func (e *Error) Error() string {
 }
 
 type pendingResult struct {
-	payload json.RawMessage
+	payload []byte
 	err     *Error
 }
 
@@ -56,7 +56,7 @@ type Conn struct {
 	pending   map[string]chan pendingResult
 
 	eventMu       sync.Mutex
-	eventHandlers map[string]func(json.RawMessage)
+	eventHandlers map[string]func([]byte)
 	eventClosers  []func()
 
 	closed    chan struct{}
@@ -81,7 +81,7 @@ func Connect(ctx context.Context, rawURL, version string) (*Conn, error) {
 	return &Conn{
 		ws:            ws,
 		pending:       make(map[string]chan pendingResult),
-		eventHandlers: make(map[string]func(json.RawMessage)),
+		eventHandlers: make(map[string]func([]byte)),
 		closed:        make(chan struct{}),
 	}, nil
 }
@@ -93,6 +93,7 @@ func addVersionQuery(rawURL, version string) (string, error) {
 	}
 	query := u.Query()
 	query.Set("version", version)
+	query.Set("binary", "1")
 	u.RawQuery = query.Encode()
 	return u.String(), nil
 }
@@ -127,7 +128,7 @@ func (c *Conn) readLoop() {
 		}
 
 		var env wire.Envelope
-		if err := json.Unmarshal(raw, &env); err != nil {
+		if err := env.UnmarshalBinary(raw); err != nil {
 			continue
 		}
 
@@ -155,7 +156,7 @@ func wireErrToError(code, message, defaultCode, defaultMessage string) *Error {
 	return &Error{Code: code, Message: message}
 }
 
-func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {
+func (c *Conn) deliver(id string, payload []byte, err *Error) {
 	if id == "" {
 		return
 	}
@@ -170,7 +171,7 @@ func (c *Conn) deliver(id string, payload json.RawMessage, err *Error) {
 	}
 }
 
-func (c *Conn) dispatchEvent(raw json.RawMessage) {
+func (c *Conn) dispatchEvent(raw []byte) {
 	c.eventMu.Lock()
 	h := c.eventHandlers[""]
 	c.eventMu.Unlock()
@@ -206,16 +207,16 @@ func (c *Conn) terminate() {
 
 // call sends a request frame for method and blocks until its response,
 // error, ctx cancellation, or connection close.
-func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessage, error) {
+func (c *Conn) call(ctx context.Context, method string, req any) ([]byte, error) {
 	select {
 	case <-c.closed:
 		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
 	default:
 	}
 
-	raw, err := json.Marshal(req)
+	raw, err := wire.Encode(req)
 	if err != nil {
-		return nil, fmt.Errorf("latch: marshal request: %w", err)
+		return nil, fmt.Errorf("latch: encode request: %w", err)
 	}
 
 	id := fmt.Sprintf("%d", c.nextID.Add(1))
@@ -225,7 +226,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 	c.pending[id] = ch
 	c.pendingMu.Unlock()
 
-	envRaw, err := json.Marshal(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: method, Payload: raw})
+	envRaw, err := (wire.Envelope{Type: wire.FrameRequest, ID: id, Method: method, Payload: raw}).MarshalBinary()
 	if err != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
@@ -234,7 +235,7 @@ func (c *Conn) call(ctx context.Context, method string, req any) (json.RawMessag
 	}
 
 	c.writeMu.Lock()
-	writeErr := c.ws.Write(ctx, websocket.MessageText, envRaw)
+	writeErr := c.ws.Write(ctx, websocket.MessageBinary, envRaw)
 	c.writeMu.Unlock()
 	if writeErr != nil {
 		c.pendingMu.Lock()
@@ -270,7 +271,7 @@ func Call[TResp any](ctx context.Context, conn *Conn, method string, req any) (T
 		return zero, err
 	}
 	var resp TResp
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err := wire.Decode(raw, &resp); err != nil {
 		return zero, fmt.Errorf("latch: decode response for %q: %w", method, err)
 	}
 	return resp, nil
@@ -289,9 +290,9 @@ func RegisterEvent[T any](conn *Conn, _ ...string) <-chan T {
 	ch := make(chan T, eventBufferSize)
 
 	conn.eventMu.Lock()
-	conn.eventHandlers[""] = func(raw json.RawMessage) {
+	conn.eventHandlers[""] = func(raw []byte) {
 		var v T
-		if err := json.Unmarshal(raw, &v); err != nil {
+		if err := wire.Decode(raw, &v); err != nil {
 			return
 		}
 		select {

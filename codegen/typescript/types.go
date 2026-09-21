@@ -21,8 +21,9 @@ func tsType(ref protocol.TypeRef, typeNames map[string]string) string {
 		protocol.KindFloat32, protocol.KindFloat64:
 		return "number"
 	case protocol.KindTime:
-		// RFC3339 string on the wire; see docs/design-notes.md.
-		return "string"
+		// Go encodes time.Time as signed Unix nanoseconds. Keep it as bigint
+		// so current timestamps remain exact in JavaScript.
+		return "bigint"
 	case protocol.KindPointer:
 		return tsType(*ref.Elem, typeNames) + " | null"
 	case protocol.KindSlice, protocol.KindArray:
@@ -100,5 +101,62 @@ func generateTypesFile(p *protocol.Protocol, typeNames map[string]string) string
 		}
 	}
 
+	b.WriteString("export const __latchWireTypes: WireTypeRegistry = {\n")
+	for _, t := range sortedNamedTypes(p.Types, typeNames) {
+		name := typeNames[t.ID]
+		b.WriteString(fmt.Sprintf("  %q: ", name))
+		if t.Kind == protocol.KindEnum {
+			b.WriteString("{ kind: \"enum\" },\n")
+			continue
+		}
+		b.WriteString("{ kind: \"struct\", fields: {")
+		for i, f := range t.Fields {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(fmt.Sprintf("%d: { name: %q, type: %s", i+1, f.JSONName, wireTypeExpr(f.Type, typeNames)))
+			if f.Optional {
+				b.WriteString(", optional: true")
+			}
+			b.WriteString(" }")
+		}
+		b.WriteString(" }},\n")
+	}
+	b.WriteString("};\n\n")
+
 	return b.String()
+}
+
+func wireTypeExpr(ref protocol.TypeRef, typeNames map[string]string) string {
+	switch ref.Kind {
+	case protocol.KindString:
+		return `{ kind: "string" }`
+	case protocol.KindBool:
+		return `{ kind: "bool" }`
+	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32, protocol.KindInt64:
+		return `{ kind: "int" }`
+	case protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:
+		return `{ kind: "uint" }`
+	case protocol.KindFloat32:
+		return `{ kind: "float32" }`
+	case protocol.KindFloat64:
+		return `{ kind: "float64" }`
+	case protocol.KindTime:
+		return `{ kind: "time" }`
+	case protocol.KindEnum, protocol.KindStruct:
+		return fmt.Sprintf(`{ kind: "named", name: %q }`, typeNames[ref.NamedType])
+	case protocol.KindPointer:
+		return fmt.Sprintf(`{ kind: "nullable", elem: %s }`, wireTypeExpr(*ref.Elem, typeNames))
+	case protocol.KindSlice:
+		if ref.Elem.Kind == protocol.KindUint8 {
+			return `{ kind: "bytes" }`
+		}
+		return fmt.Sprintf(`{ kind: "list", elem: %s }`, wireTypeExpr(*ref.Elem, typeNames))
+	case protocol.KindArray:
+		return fmt.Sprintf(`{ kind: "list", elem: %s }`, wireTypeExpr(*ref.Elem, typeNames))
+	case protocol.KindMap:
+		return fmt.Sprintf(`{ kind: "map", value: %s }`, wireTypeExpr(*ref.MapValue, typeNames))
+	default:
+		panic(fmt.Sprintf("typescript: cannot build wire type for %q", ref.Kind))
+	}
 }

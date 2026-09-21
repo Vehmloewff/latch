@@ -88,6 +88,15 @@ func sortedNamedTypes(types []*protocol.NamedType, typeNames map[string]string) 
 // generateTypesFile renders types.go: one Go struct (with encoding/json
 // struct tags matching the wire exactly) per struct named type, one named
 // string type plus a const block per enum named type.
+func fieldNumber(t *protocol.NamedType, f protocol.Field) int {
+	for i, candidate := range t.Fields {
+		if candidate.GoName == f.GoName {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 func generateTypesFile(pkg string, p *protocol.Protocol, typeNames map[string]string) string {
 	sorted := sortedNamedTypes(p.Types, typeNames)
 
@@ -124,7 +133,12 @@ func generateTypesFile(pkg string, p *protocol.Protocol, typeNames map[string]st
 				if f.Optional {
 					tag += ",omitempty"
 				}
-				fmt.Fprintf(&b, "\t%s %s `json:%q`\n", f.GoName, goType(f.Type, typeNames), tag)
+				fmt.Fprintf(&b, "\t%s %s `json:%q latch:%q`\n", f.GoName, goType(f.Type, typeNames), tag, fmt.Sprintf("%d%s", fieldNumber(t, f), func() string {
+					if f.Optional {
+						return ",omitempty"
+					}
+					return ""
+				}()))
 			}
 			b.WriteString("}\n\n")
 

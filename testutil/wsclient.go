@@ -5,7 +5,7 @@ package testutil
 
 import (
 	"context"
-	"encoding/json"
+
 	"testing"
 	"time"
 
@@ -37,16 +37,16 @@ func Dial(t *testing.T, url string) *Client {
 	return &Client{t: t, ws: ws}
 }
 
-// Send marshals and writes env as a single WebSocket text message.
+// Send encodes and writes env as a single WebSocket binary message.
 func (c *Client) Send(env wire.Envelope) {
 	c.t.Helper()
-	raw, err := json.Marshal(env)
+	raw, err := env.MarshalBinary()
 	if err != nil {
 		c.t.Fatalf("testutil: marshal envelope: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
-	if err := c.ws.Write(ctx, websocket.MessageText, raw); err != nil {
+	if err := c.ws.Write(ctx, websocket.MessageBinary, raw); err != nil {
 		c.t.Fatalf("testutil: write: %v", err)
 	}
 }
@@ -57,7 +57,7 @@ func (c *Client) SendRaw(raw []byte) {
 	c.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
-	if err := c.ws.Write(ctx, websocket.MessageText, raw); err != nil {
+	if err := c.ws.Write(ctx, websocket.MessageBinary, raw); err != nil {
 		c.t.Fatalf("testutil: write raw: %v", err)
 	}
 }
@@ -84,7 +84,7 @@ func (c *Client) TryRecv(timeout time.Duration) (wire.Envelope, error) {
 		return wire.Envelope{}, err
 	}
 	var env wire.Envelope
-	if err := json.Unmarshal(raw, &env); err != nil {
+	if err := env.UnmarshalBinary(raw); err != nil {
 		return wire.Envelope{}, err
 	}
 	return env, nil
@@ -95,9 +95,9 @@ func (c *Client) TryRecv(timeout time.Duration) (wire.Envelope, error) {
 // "connection_error").
 func (c *Client) Connect(protocol, version string, payload any) wire.Envelope {
 	c.t.Helper()
-	raw, err := json.Marshal(payload)
+	raw, err := wire.Encode(payload)
 	if err != nil {
-		c.t.Fatalf("testutil: marshal connect payload: %v", err)
+		c.t.Fatalf("testutil: encode connect payload: %v", err)
 	}
 	c.Send(wire.Envelope{Type: wire.FrameConnect, Version: version, Payload: raw})
 	return c.Recv()
@@ -106,9 +106,9 @@ func (c *Client) Connect(protocol, version string, payload any) wire.Envelope {
 // Request sends a "request" frame for method with the given id and payload.
 func (c *Client) Request(id, method string, payload any) {
 	c.t.Helper()
-	raw, err := json.Marshal(payload)
+	raw, err := wire.Encode(payload)
 	if err != nil {
-		c.t.Fatalf("testutil: marshal request payload: %v", err)
+		c.t.Fatalf("testutil: encode request payload: %v", err)
 	}
 	c.Send(wire.Envelope{Type: wire.FrameRequest, ID: id, Method: method, Payload: raw})
 }

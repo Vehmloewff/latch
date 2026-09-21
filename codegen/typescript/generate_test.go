@@ -125,15 +125,24 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 	wantClientSnippets := []string{
 		`billingInvoiceGet(req: GetInvoiceRequest): Promise<GetInvoiceResponse>`,
 		`userGet(req: UserGetRequest): Promise<UserGetResponse>`,
-		`this.call("billing.invoice.get", req)`,
-		`this.call("user.get", req)`,
+		`this.call<GetInvoiceResponse>("billing.invoice.get", req`,
+		`this.call<UserGetResponse>("user.get", req`,
 		`readonly events = new EventStream<InvoiceUpdated>()`,
 		`export class LatchClient {`,
 		`export class ConnectedLatchClient extends BaseConnection {`,
+		`export function encodeEnvelope(envelope: Envelope): Uint8Array`,
+		`export function decodeEnvelope(data: Uint8Array): Envelope`,
+		`this.ws.send(encodeEnvelope({ type: "request"`,
+		`decodeTyped(data, { kind: "named", name: "GetInvoiceResponse" }`,
 	}
 	for _, want := range wantClientSnippets {
 		if !bytes.Contains([]byte(client), []byte(want)) {
 			t.Errorf("client.ts missing expected snippet %q; got:\n%s", want, client)
+		}
+	}
+	for _, forbidden := range []string{"JSON.stringify", "JSON.parse"} {
+		if bytes.Contains([]byte(client), []byte(forbidden)) {
+			t.Errorf("generated client.ts still contains JSON transport operation %q", forbidden)
 		}
 	}
 }

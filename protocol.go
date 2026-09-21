@@ -2,9 +2,9 @@ package latch
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
-	"io"
+
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -12,91 +12,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latch/jsonschema"
-	"github.com/vehmloewff/latch/protocol"
 	"github.com/vehmloewff/latch/wire"
 )
-
-// Manifest is Latch's stable, machine-readable description of a
-// finalized API: enough for a code generator to build TypeScript, Dart, or
-// Go clients (or anything else) without ever inspecting Go reflection or
-// source code directly. LatchVersion is bumped whenever the manifest
-// shape itself changes incompatibly.
-type Manifest struct {
-	LatchVersion int    `json:"latchVersion"`
-	Version      string `json:"version"`
-	// Connect is omitted in the current protocol. It remains as a deprecated
-	// field so manifests produced by older callers can still be decoded.
-	Connect map[string]any   `json:"connect,omitempty"`
-	Methods []ManifestMethod `json:"methods"`
-	Event   map[string]any   `json:"event,omitempty"`
-	Types   map[string]any   `json:"types"`
-
-	// IR is the complete, lossless normalized intermediate representation
-	// the reflection stage produced — exactly what every code generator
-	// consumes. The Methods[].Request/Response/Event JSON Schema documents
-	// above are a derived, human-and-tool-friendly view of the same data.
-	IR *protocol.Protocol `json:"ir"`
-}
-
-// ManifestMethod describes one registered method, with self-contained JSON
-// Schema documents for its request and response.
-type ManifestMethod struct {
-	Name     string         `json:"name"`
-	Request  map[string]any `json:"request"`
-	Response map[string]any `json:"response"`
-}
-
-// ManifestEvent describes one registered event, with a self-contained JSON
-// Schema document for its payload.
-//
-// Deprecated: manifests now contain one Event schema instead of named events.
-type ManifestEvent struct {
-	Name    string         `json:"name"`
-	Payload map[string]any `json:"payload"`
-}
-
-// Manifest finalizes the server (if not already finalized) and returns its
-// complete protocol manifest. Manifest generation is deterministic: the
-// same set of registrations always produces byte-identical JSON.
-func (s *Server[S]) Manifest() (*Manifest, error) {
-	if err := s.finalize(); err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	m := &Manifest{
-		LatchVersion: 2,
-		Version:      s.opts.ProtocolVersion,
-		Types:        jsonschema.AllDefs(s.ir),
-		IR:           s.ir,
-	}
-	for _, meth := range s.ir.Methods {
-		m.Methods = append(m.Methods, ManifestMethod{
-			Name:     meth.Name,
-			Request:  jsonschema.BuildDocument(s.ir, meth.RequestType),
-			Response: jsonschema.BuildDocument(s.ir, meth.ResponseType),
-		})
-	}
-	if eventRef, ok := s.ir.EventRef(); ok {
-		m.Event = jsonschema.BuildDocument(s.ir, eventRef)
-	}
-	return m, nil
-}
-
-// WriteManifest writes the server's protocol manifest to w as indented
-// JSON.
-func (s *Server[S]) WriteManifest(w io.Writer) error {
-	m, err := s.Manifest()
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(m)
-}
 
 // Methods returns a read-only snapshot of every registered method, sorted
 // by name.
@@ -222,8 +139,8 @@ func (s *Server[S]) readLoop(conn *Conn) {
 		}
 
 		var env wire.Envelope
-		if err := json.Unmarshal(raw, &env); err != nil {
-			s.protocolViolation(conn, "malformed JSON envelope")
+		if err := env.UnmarshalBinary(raw); err != nil {
+			s.protocolViolation(conn, "malformed binary envelope")
 			return
 		}
 
@@ -298,17 +215,8 @@ func (s *Server[S]) dispatchMethod(ctx context.Context, conn *Conn, env wire.Env
 		return
 	}
 
-	payload := env.Payload
-	if payload == nil {
-		payload = json.RawMessage("{}")
-	}
-	if err := m.requestValidator.ValidateJSON(payload); err != nil {
-		s.sendResponseError(conn, env.ID, ErrCodeInvalidRequest, "request payload failed schema validation")
-		return
-	}
-
 	reqPtr := m.adapter.NewRequest()
-	if err := json.Unmarshal(payload, reqPtr); err != nil {
+	if err := wire.Decode(env.Payload, reqPtr); err != nil {
 		s.sendResponseError(conn, env.ID, ErrCodeInvalidRequest, "malformed request payload")
 		return
 	}
@@ -326,19 +234,11 @@ func (s *Server[S]) dispatchMethod(ctx context.Context, conn *Conn, env wire.Env
 		return
 	}
 
-	raw, err := json.Marshal(resp)
+	raw, err := wire.Encode(resp)
 	if err != nil {
 		s.logf(conn.ctx, slog.LevelError, "latch: failed to marshal response", "method", env.Method, "error", err)
 		s.sendResponseError(conn, env.ID, ErrCodeInternal, "internal error")
 		return
-	}
-
-	if m.responseValidator != nil {
-		if err := m.responseValidator.ValidateJSON(raw); err != nil {
-			s.logf(conn.ctx, slog.LevelError, "latch: response failed schema validation (this indicates a Latch bug)", "method", env.Method, "error", err)
-			s.sendResponseError(conn, env.ID, ErrCodeInternal, "internal error")
-			return
-		}
 	}
 
 	_ = conn.enqueue(wire.Envelope{Type: wire.FrameResponse, ID: env.ID, Payload: raw})

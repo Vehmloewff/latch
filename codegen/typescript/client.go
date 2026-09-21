@@ -32,8 +32,9 @@ func renderMethodNamespace(node *names.MethodNode, methods map[string]protocol.M
 		if child.IsLeaf {
 			m := methods[child.FullName]
 			b.WriteString(fmt.Sprintf(
-				"(req: %s): Promise<%s> => this.call(%q, req)",
-				tsType(m.RequestType, typeNames), tsType(m.ResponseType, typeNames), child.FullName,
+				"(req: %s): Promise<%s> => this.call<%s>(%q, req, value => encodeTyped(value, %s, __latchWireTypes), data => decodeTyped(data, %s, __latchWireTypes) as %s)",
+				tsType(m.RequestType, typeNames), tsType(m.ResponseType, typeNames), tsType(m.ResponseType, typeNames), child.FullName,
+				wireTypeExpr(m.RequestType, typeNames), wireTypeExpr(m.ResponseType, typeNames), tsType(m.ResponseType, typeNames),
 			))
 		} else {
 			b.WriteString(renderMethodNamespace(child, methods, typeNames, inner))
@@ -51,9 +52,10 @@ func renderClientFields(p *protocol.Protocol, typeNames map[string]string) strin
 	var b strings.Builder
 	for _, m := range p.Methods {
 		b.WriteString(fmt.Sprintf(
-			"  %s(req: %s): Promise<%s> {\n    return this.call(%q, req);\n  }\n",
+			"  %s(req: %s): Promise<%s> {\n    return this.call<%s>(%q, req, value => encodeTyped(value, %s, __latchWireTypes), data => decodeTyped(data, %s, __latchWireTypes) as %s);\n  }\n",
 			names.CamelCase(m.Name),
-			tsType(m.RequestType, typeNames), tsType(m.ResponseType, typeNames), m.Name,
+			tsType(m.RequestType, typeNames), tsType(m.ResponseType, typeNames), tsType(m.ResponseType, typeNames), m.Name,
+			wireTypeExpr(m.RequestType, typeNames), wireTypeExpr(m.ResponseType, typeNames), tsType(m.ResponseType, typeNames),
 		))
 	}
 	return b.String()
@@ -69,10 +71,10 @@ func renderEventsField(p *protocol.Protocol, typeNames map[string]string) (strin
 	return fmt.Sprintf("  readonly events = new EventStream<%s>();\n", tsType(ref, typeNames)), nil
 }
 
-func renderDispatchEvent(eventType string) string {
+func renderDispatchEvent(eventType, eventTypeWireType string) string {
 	var b strings.Builder
-	b.WriteString("  protected dispatchEvent(env: { payload?: unknown }): void {\n")
-	fmt.Fprintf(&b, "    this.events._emit(env.payload as %s);\n", eventType)
+	b.WriteString("  protected dispatchEvent(env: { payload?: Uint8Array }): void {\n")
+	fmt.Fprintf(&b, "    this.events._emit(decodeTyped(env.payload ?? new Uint8Array(), %s, __latchWireTypes) as %s);\n", eventTypeWireType, eventType)
 	b.WriteString("  }\n")
 	return b.String()
 }
@@ -111,7 +113,7 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 	b.WriteString("\n")
 	b.WriteString(eventsField)
 	b.WriteString("\n")
-	b.WriteString(renderDispatchEvent(tsType(eventRef, typeNames)))
+	b.WriteString(renderDispatchEvent(tsType(eventRef, typeNames), wireTypeExpr(eventRef, typeNames)))
 	b.WriteString("}\n")
 
 	return b.String(), nil

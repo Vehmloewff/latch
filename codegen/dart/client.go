@@ -113,7 +113,7 @@ func collectNamespaceClasses(clientName, connectedName string, node *names.Metho
 			reqType := dartType(m.RequestType, typeNames)
 			fmt.Fprintf(&b, "  Future<%s> %s(%s req) => _client.call(\n", respType, propName, reqType)
 			fmt.Fprintf(&b, "        %q,\n", child.FullName)
-			b.WriteString("        req.toJson(),\n")
+			b.WriteString("        req.toBinary(),\n")
 			fmt.Fprintf(&b, "        (raw) => %s,\n", decodeExpr("raw", m.ResponseType, typeNames))
 			b.WriteString("      );\n\n")
 		} else {
@@ -139,7 +139,7 @@ func renderRootMembers(clientName string, root *names.MethodNode, methods map[st
 			reqType := dartType(m.RequestType, typeNames)
 			fmt.Fprintf(&b, "  Future<%s> %s(%s req) => call(\n", respType, propName, reqType)
 			fmt.Fprintf(&b, "        %q,\n", child.FullName)
-			b.WriteString("        req.toJson(),\n")
+			b.WriteString("        req.toBinary(),\n")
 			fmt.Fprintf(&b, "        (raw) => %s,\n", decodeExpr("raw", m.ResponseType, typeNames))
 			b.WriteString("      );\n\n")
 		} else {
@@ -225,7 +225,7 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 		reqType := dartType(m.RequestType, typeNames)
 		fmt.Fprintf(&b, "  Future<%s> %s(%s req) => call(\n", respType, names.CamelCase(m.Name), reqType)
 		fmt.Fprintf(&b, "        %q,\n", m.Name)
-		b.WriteString("        req.toJson(),\n")
+		b.WriteString("        req.toBinary(),\n")
 		fmt.Fprintf(&b, "        (raw) => %s,\n", decodeExpr("raw", m.ResponseType, typeNames))
 		b.WriteString("      );\n\n")
 	}

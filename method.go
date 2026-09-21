@@ -3,7 +3,6 @@ package latch
 import (
 	"reflect"
 
-	"github.com/vehmloewff/latch/jsonschema"
 	"github.com/vehmloewff/latch/protocol"
 	"github.com/vehmloewff/latch/reflectapi"
 )
@@ -15,9 +14,6 @@ type methodEntry struct {
 
 	requestRef  protocol.TypeRef
 	responseRef protocol.TypeRef
-
-	requestValidator  *jsonschema.Validator
-	responseValidator *jsonschema.Validator // only set when Options.ValidateResponses
 }
 
 // eventEntry is retained only for source compatibility with old tooling.
@@ -25,7 +21,6 @@ type eventEntry struct {
 	name        string
 	payloadType reflect.Type
 	payloadRef  protocol.TypeRef
-	validator   *jsonschema.Validator // only set when Options.ValidateResponses
 }
 
 // MethodDescriptor is a read-only view of a registered method, returned by
