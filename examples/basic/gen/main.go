@@ -13,19 +13,21 @@ import (
 func main() {
 	lw := api.Build()
 
-	err := lw.Generate(latchwire.GenerateOptions{
-		TypeScript: &latchwire.TypeScriptOptions{
-			OutputDir: "examples/basic/generated/typescript",
-		},
-		Dart: &latchwire.DartOptions{
+	err := lw.GenerateTypeScript(latchwire.TypeScriptOptions{
+		OutputDir: "examples/basic/generated/typescript",
+	})
+	if err == nil {
+		err = lw.GenerateDart(latchwire.DartOptions{
 			OutputDir: "examples/basic/generated/dart",
 			Package:   "basic_client",
-		},
-		Go: &latchwire.GoOptions{
+		})
+	}
+	if err == nil {
+		err = lw.GenerateGo(latchwire.GoOptions{
 			OutputDir: "examples/basic/generated/golang",
 			Package:   "basicclient",
-		},
-	})
+		})
+	}
 	if err != nil {
 		log.Fatal(err)
 	}

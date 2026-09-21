@@ -96,7 +96,8 @@ func (o *Options) withDefaults() Options {
 // Server is a configured Latchwire API. Its one server-to-client event type
 // is inferred from the generic Emitter supplied to OnConnect.
 // Construct one with New, register methods, optionally set OnConnect, then
-// either serve it (ServeHTTP) or generate clients from it (Generate).
+// either serve it (ServeHTTP) or generate clients from it with one of the
+// target-specific GenerateTypeScript, GenerateDart, or GenerateGo methods.
 type Server[S any] struct {
 	opts Options
 

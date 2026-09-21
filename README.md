@@ -102,11 +102,13 @@ Generate clients from the exact same registration — no separate schema, no
 ```go
 func main() {
     lw := BuildAPI()
-    err := lw.Generate(latchwire.GenerateOptions{
-        TypeScript: &latchwire.TypeScriptOptions{OutputDir: "./generated/typescript"},
-        Dart:       &latchwire.DartOptions{OutputDir: "./generated/dart", Package: "latchwire_client"},
-        Go:         &latchwire.GoOptions{OutputDir: "./generated/go", Package: "latchwireclient"},
-    })
+    err := lw.GenerateTypeScript(latchwire.TypeScriptOptions{OutputDir: "./generated/typescript"})
+    if err == nil {
+        err = lw.GenerateDart(latchwire.DartOptions{OutputDir: "./generated/dart", Package: "latchwire_client"})
+    }
+    if err == nil {
+        err = lw.GenerateGo(latchwire.GoOptions{OutputDir: "./generated/go", Package: "latchwireclient"})
+    }
     if err != nil {
         log.Fatal(err)
     }
@@ -179,8 +181,8 @@ missing feature in the generated code.
    other per-connection setup. It returns the `State` passed to methods and
    `OnDisconnect`; `conn.Request()` is the HTTP upgrade request.
 5. **Serve it**: a `*latchwire.Server[State]` is an `http.Handler`.
-6. **Generate clients**: `lw.Generate(latchwire.GenerateOptions{...})` — a
-   plain function call from a plain Go program (see
+6. **Generate clients**: call `lw.GenerateTypeScript`, `lw.GenerateDart`,
+   and/or `lw.GenerateGo` from a plain Go program (see
    `examples/basic/gen`), never `go generate`.
 7. **Call the generated APIs** from TypeScript, Dart, or Go, exactly as
    shown above.
@@ -221,42 +223,26 @@ codegen/{typescript,dart,golang}/      Per-language generators
 names/                                 Shared naming/namespacing helpers
 wire/                                  Wire envelope types
 testutil/                              Handwritten test WebSocket client
-cmd/latchwire/                         CLI: generate from an exported manifest
+
 examples/basic/                        A complete worked example, all 3 languages
 tests/integration/                     Cross-language integration suite
 docs/design-notes.md                   Every non-obvious decision, written down
 ```
 
 Every package here is public — none of this lives under `internal/`. Both
-the codegen generators and their `protocol.Protocol` IR input need to be
-importable so a project can build its own small CLI or tooling around them
-(the same way `cmd/latchwire` does), and keeping the rest of the pipeline
-(`reflectapi`, `jsonschema`, `names`, `wire`) alongside them avoids an
-arbitrary, hard-to-predict split between what's "core" and what's
-"internal."
+the codegen generators and their `protocol.Protocol` IR input are importable,
+and the rest of the pipeline (`reflectapi`, `jsonschema`, `names`, `wire`)
+remains alongside them rather than being split into an arbitrary internal
+package.
 
-## Generating clients: two ways
+## Generating clients
 
-**Programmatic (primary, recommended)** — call `Server.Generate` from a
-plain Go program that builds the same server your application serves (see
-`examples/basic/gen/main.go`). This is the only way that actually reflects
-over your types; nothing about Latchwire parses Go source.
-
-**CLI, from an exported manifest (secondary)** — `Server.WriteManifest`
-writes a complete, versioned JSON description of your protocol (including
-its full IR, not just derived JSON Schema). The `latchwire` CLI can then
-generate clients from that file alone, without your server's source
-available:
-
-```sh
-latchwire generate --manifest latchwire.json \
-  --typescript ./gen/ts --dart ./gen/dart --go ./gen/go
-```
-
-This is useful for a CI step or generating against a manifest published by
-a running service, but it's still downstream of the same reflection your
-own program performs — the CLI itself never reflects over arbitrary Go
-source.
+Call the target-specific server methods (`Server.GenerateTypeScript`,
+`Server.GenerateDart`, or `Server.GenerateGo`) from a plain Go program that
+builds the same server your application serves (see
+`examples/basic/gen/main.go`). Each method finalizes the server schema once
+and passes it to the selected code generator. This is the way to generate
+clients from your Go API definition; nothing about Latchwire parses Go source.
 
 ## Testing this repository
 

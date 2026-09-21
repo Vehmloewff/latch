@@ -35,10 +35,7 @@ type Manifest struct {
 	// IR is the complete, lossless normalized intermediate representation
 	// the reflection stage produced — exactly what every code generator
 	// consumes. The Methods[].Request/Response/Event JSON Schema documents
-	// above are a derived, human-and-tool-friendly
-	// view of the same data; IR is what the `latchwire generate` CLI
-	// (cmd/latchwire) actually deserializes to regenerate clients without
-	// ever re-running reflection.
+	// above are a derived, human-and-tool-friendly view of the same data.
 	IR *protocol.Protocol `json:"ir"`
 }
 

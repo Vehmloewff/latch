@@ -10,6 +10,7 @@ import (
 	"github.com/vehmloewff/latchwire/codegen/dart"
 	"github.com/vehmloewff/latchwire/codegen/golang"
 	"github.com/vehmloewff/latchwire/codegen/typescript"
+	"github.com/vehmloewff/latchwire/protocol"
 )
 
 // TypeScriptOptions configures TypeScript client generation.
@@ -63,60 +64,106 @@ type GenerateOptions struct {
 	Go         *GoOptions
 }
 
-// Generate finalizes the server (if not already finalized) and writes
-// generated client code for every requested language. Generation is
-// deterministic and atomic per output directory: files are fully rendered
-// in memory first, and a directory is only touched if every requested
-// language rendered successfully. Latchwire tracks which files it owns in
-// each output directory (via a small manifest file) so that a type or
-// method removed from the protocol has its stale generated file removed
-// too, without ever touching files Latchwire didn't generate.
-func (s *Server[S]) Generate(opts GenerateOptions) error {
+// Schema finalizes the server (if necessary) and returns the normalized
+// protocol schema used by runtime validation and client generators. The
+// returned schema is immutable from the server's point of view and should be
+// treated as read-only by callers.
+func (s *Server[S]) Schema() (*protocol.Protocol, error) {
 	if err := s.finalize(); err != nil {
-		return err
+		return nil, err
 	}
 
 	s.mu.Lock()
-	ir := s.ir
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return s.ir, nil
+}
 
+// GenerateSchema is an explicit alias for Schema. It is useful when the
+// schema is being obtained as an input to custom tooling or a custom client
+// generator.
+func (s *Server[S]) GenerateSchema() (*protocol.Protocol, error) {
+	return s.Schema()
+}
+
+// GenerateTypeScript finalizes the server and writes a TypeScript client.
+// The server's generated schema is passed directly to the TypeScript
+// codegen package.
+func (s *Server[S]) GenerateTypeScript(opts TypeScriptOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := typescript.Generate(schema, typescript.Options{ClientName: opts.ClientName})
+	if err != nil {
+		return fmt.Errorf("latchwire: generate typescript: %w", err)
+	}
+	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latchwire: write typescript output: %w", err)
+	}
+	return nil
+}
+
+// GenerateDart finalizes the server and writes a Dart client package. The
+// server's generated schema is passed directly to the Dart codegen package.
+func (s *Server[S]) GenerateDart(opts DartOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := dart.Generate(schema, dart.Options{
+		Package:    opts.Package,
+		ClientName: opts.ClientName,
+	})
+	if err != nil {
+		return fmt.Errorf("latchwire: generate dart: %w", err)
+	}
+	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latchwire: write dart output: %w", err)
+	}
+	dart.FormatDir(opts.OutputDir)
+	return nil
+}
+
+// GenerateGo finalizes the server and writes a Go client. The server's
+// generated schema is passed directly to the Go codegen package.
+func (s *Server[S]) GenerateGo(opts GoOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := golang.Generate(schema, golang.Options{
+		Package:    opts.Package,
+		ClientName: opts.ClientName,
+	})
+	if err != nil {
+		return fmt.Errorf("latchwire: generate go: %w", err)
+	}
+	if err := writeOwnedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latchwire: write go output: %w", err)
+	}
+	return nil
+}
+
+// Generate finalizes the server (if not already finalized) and writes
+// generated client code for every requested language. It is retained as a
+// convenience wrapper; callers that want one target can use
+// GenerateTypeScript, GenerateDart, or GenerateGo directly.
+func (s *Server[S]) Generate(opts GenerateOptions) error {
 	if opts.TypeScript != nil {
-		files, err := typescript.Generate(ir, typescript.Options{ClientName: opts.TypeScript.ClientName})
-		if err != nil {
-			return fmt.Errorf("latchwire: generate typescript: %w", err)
-		}
-		if err := writeOwnedFiles(opts.TypeScript.OutputDir, files); err != nil {
-			return fmt.Errorf("latchwire: write typescript output: %w", err)
+		if err := s.GenerateTypeScript(*opts.TypeScript); err != nil {
+			return err
 		}
 	}
-
 	if opts.Dart != nil {
-		files, err := dart.Generate(ir, dart.Options{
-			Package:    opts.Dart.Package,
-			ClientName: opts.Dart.ClientName,
-		})
-		if err != nil {
-			return fmt.Errorf("latchwire: generate dart: %w", err)
+		if err := s.GenerateDart(*opts.Dart); err != nil {
+			return err
 		}
-		if err := writeOwnedFiles(opts.Dart.OutputDir, files); err != nil {
-			return fmt.Errorf("latchwire: write dart output: %w", err)
-		}
-		dart.FormatDir(opts.Dart.OutputDir)
 	}
-
 	if opts.Go != nil {
-		files, err := golang.Generate(ir, golang.Options{
-			Package:    opts.Go.Package,
-			ClientName: opts.Go.ClientName,
-		})
-		if err != nil {
-			return fmt.Errorf("latchwire: generate go: %w", err)
-		}
-		if err := writeOwnedFiles(opts.Go.OutputDir, files); err != nil {
-			return fmt.Errorf("latchwire: write go output: %w", err)
+		if err := s.GenerateGo(*opts.Go); err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
