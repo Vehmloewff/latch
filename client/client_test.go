@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/client"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/client"
 	"github.com/vehmloewff/report"
 )
 

@@ -1,7 +1,7 @@
 // Package golang generates an idiomatic, standalone Go client from
 // Latchwire's protocol IR. Generated output never depends on the server
 // implementation package, only on the small public runtime at
-// github.com/vehmloewff/latchwire/client. Every file is passed through
+// github.com/vehmloewff/latch/client. Every file is passed through
 // go/format before being returned, per spec section 50.
 package golang
 
@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"go/format"
 
-	"github.com/vehmloewff/latchwire/codegen"
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/codegen"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // Options configures Go client generation.

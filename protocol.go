@@ -12,9 +12,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latchwire/jsonschema"
-	"github.com/vehmloewff/latchwire/protocol"
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch/jsonschema"
+	"github.com/vehmloewff/latch/protocol"
+	"github.com/vehmloewff/latch/wire"
 )
 
 // Manifest is Latchwire's stable, machine-readable description of a

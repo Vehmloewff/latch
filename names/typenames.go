@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // AssignTypeNames deterministically assigns each named type a display name

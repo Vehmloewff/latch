@@ -15,10 +15,10 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/vehmloewff/latchwire/jsonschema"
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
-	"github.com/vehmloewff/latchwire/reflectapi"
+	"github.com/vehmloewff/latch/jsonschema"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
+	"github.com/vehmloewff/latch/reflectapi"
 )
 
 // Default configuration values, used whenever the corresponding Options

@@ -7,7 +7,7 @@ package basicclient
 import (
 	"context"
 
-	"github.com/vehmloewff/latchwire/client"
+	"github.com/vehmloewff/latch/client"
 )
 
 // LatchwireClient is a Latchwire client. Construct one with New,

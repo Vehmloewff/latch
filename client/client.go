@@ -15,7 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch/wire"
 )
 
 // eventBufferSize bounds the per-event channel returned by RegisterEvent.

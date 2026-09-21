@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/examples/basic/api"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/examples/basic/api"
 )
 
 // repoRoot locates the module root from this test file's own path, so the

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 const draft202012 = "https://json-schema.org/draft/2020-12/schema"

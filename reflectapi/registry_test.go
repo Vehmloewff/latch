@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 type Address struct {

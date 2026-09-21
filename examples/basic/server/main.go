@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/vehmloewff/latchwire/examples/basic/api"
+	"github.com/vehmloewff/latch/examples/basic/api"
 )
 
 func main() {

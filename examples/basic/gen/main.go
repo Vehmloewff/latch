@@ -6,8 +6,8 @@ package main
 import (
 	"log"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/examples/basic/api"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/examples/basic/api"
 )
 
 func main() {

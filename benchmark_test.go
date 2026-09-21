@@ -11,8 +11,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/vehmloewff/report"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/wire"
 )
 
 // BenchmarkRequestRoundTrip measures single-connection request/response

@@ -10,9 +10,9 @@ package dart
 import (
 	"fmt"
 
-	"github.com/vehmloewff/latchwire/codegen"
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/codegen"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // Options configures Dart generation.

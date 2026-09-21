@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // tsType renders the TypeScript type for ref, given the display name chosen

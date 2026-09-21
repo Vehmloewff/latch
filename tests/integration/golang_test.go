@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/client"
-	"github.com/vehmloewff/latchwire/examples/basic/api"
-	basicclient "github.com/vehmloewff/latchwire/examples/basic/generated/golang"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/client"
+	"github.com/vehmloewff/latch/examples/basic/api"
+	basicclient "github.com/vehmloewff/latch/examples/basic/generated/golang"
 )
 
 // TestGeneratedGoClientAgainstLiveServer regenerates the "basic" example's

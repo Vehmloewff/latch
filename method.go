@@ -3,9 +3,9 @@ package latchwire
 import (
 	"reflect"
 
-	"github.com/vehmloewff/latchwire/jsonschema"
-	"github.com/vehmloewff/latchwire/protocol"
-	"github.com/vehmloewff/latchwire/reflectapi"
+	"github.com/vehmloewff/latch/jsonschema"
+	"github.com/vehmloewff/latch/protocol"
+	"github.com/vehmloewff/latch/reflectapi"
 )
 
 // methodEntry is the internal registry record for one registered method.

@@ -11,7 +11,7 @@ import (
 	"github.com/vehmloewff/report"
 )
 
-const instrumentationName = "github.com/vehmloewff/latchwire"
+const instrumentationName = "github.com/vehmloewff/latch"
 
 func spanEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
 	span := trace.SpanFromContext(ctx)

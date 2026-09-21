@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // methodIndex maps a wire method name to its IR definition.

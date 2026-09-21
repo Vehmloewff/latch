@@ -11,8 +11,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latchwire/jsonschema"
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch/jsonschema"
+	"github.com/vehmloewff/latch/wire"
 )
 
 // writeTimeout bounds a single outbound WebSocket frame write.

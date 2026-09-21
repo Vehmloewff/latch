@@ -11,7 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch/wire"
 )
 
 const defaultTimeout = 5 * time.Second

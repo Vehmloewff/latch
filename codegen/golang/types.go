@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // goType renders the Go type for ref, given the display name chosen for

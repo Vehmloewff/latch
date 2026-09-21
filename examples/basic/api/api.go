@@ -12,7 +12,7 @@ package api
 import (
 	"context"
 
-	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/latch"
 )
 
 // SubscribeRequest is the payload for the "room.subscribe" method.

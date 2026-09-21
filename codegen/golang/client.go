@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/vehmloewff/latchwire/names"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/names"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 func methodIndex(p *protocol.Protocol) map[string]protocol.Method {
@@ -168,7 +168,7 @@ func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typ
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", pkg)
-	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/vehmloewff/latchwire/client\"\n)\n\n")
+	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n")
 
 	fmt.Fprintf(&b, "// %s is a Latchwire client. Construct one with New,\n", clientName)
 	fmt.Fprintf(&b, "// then call Connect to obtain a %s.\n", connectedName)

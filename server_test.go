@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/testutil"
-	"github.com/vehmloewff/latchwire/wire"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/testutil"
+	"github.com/vehmloewff/latch/wire"
 	"github.com/vehmloewff/report"
 )
 

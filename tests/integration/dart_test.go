@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vehmloewff/latchwire"
-	"github.com/vehmloewff/latchwire/examples/basic/api"
+	"github.com/vehmloewff/latch"
+	"github.com/vehmloewff/latch/examples/basic/api"
 )
 
 // TestGeneratedDartClientAgainstLiveServer regenerates the "basic"

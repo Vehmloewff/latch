@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 var (

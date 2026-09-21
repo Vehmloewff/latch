@@ -1,4 +1,4 @@
-module github.com/vehmloewff/latchwire
+module github.com/vehmloewff/latch
 
 go 1.27.1
 

@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/vehmloewff/latchwire/protocol"
-	"github.com/vehmloewff/latchwire/reflectapi"
+	"github.com/vehmloewff/latch/protocol"
+	"github.com/vehmloewff/latch/reflectapi"
 )
 
 type ConnectParams struct {

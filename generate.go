@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/vehmloewff/latchwire/codegen/dart"
-	"github.com/vehmloewff/latchwire/codegen/golang"
-	"github.com/vehmloewff/latchwire/codegen/typescript"
-	"github.com/vehmloewff/latchwire/protocol"
+	"github.com/vehmloewff/latch/codegen/dart"
+	"github.com/vehmloewff/latch/codegen/golang"
+	"github.com/vehmloewff/latch/codegen/typescript"
+	"github.com/vehmloewff/latch/protocol"
 )
 
 // TypeScriptOptions configures TypeScript client generation.

@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/vehmloewff/latchwire"
+	"github.com/vehmloewff/latch"
 	"github.com/vehmloewff/report"
 )
 
