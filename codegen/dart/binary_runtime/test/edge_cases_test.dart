@@ -93,33 +93,47 @@ void main() {
       }
     });
 
-    test('rejects sub-microsecond timestamps instead of truncating them', () {
-      _expectMalformed(
-        () => BinaryCodec.decode(
-            _valueWithVarint(ValueTag.time, _zigzag(BigInt.one))),
-      );
-      _expectMalformed(
-        () => BinaryCodec.decode(
-          _valueWithVarint(ValueTag.time, _zigzag(BigInt.from(1001))),
-        ),
-      );
+    test('truncates sub-microsecond timestamps toward zero', () {
+      final cases = <BigInt, int>{
+        BigInt.one: 0,
+        BigInt.from(1001): 1,
+        BigInt.from(-1): 0,
+        BigInt.from(-1001): -1,
+      };
+      for (final entry in cases.entries) {
+        final decoded = BinaryCodec.decode(
+          _valueWithVarint(ValueTag.time, _zigzag(entry.key)),
+        ) as DateTime;
+        expect(decoded,
+            DateTime.fromMicrosecondsSinceEpoch(entry.value, isUtc: true));
+      }
     });
 
-    test('rejects timestamps outside the signed nanosecond range', () {
+    test('preserves signed nanosecond boundaries and rejects overflow', () {
       final tooLargeDate = DateTime.fromMicrosecondsSinceEpoch(
         (_int64Max ~/ BigInt.from(1000) + BigInt.one).toInt(),
         isUtc: true,
       );
       _expectArgumentError(() => BinaryCodec.encode(tooLargeDate));
 
-      _expectMalformed(
-        () => BinaryCodec.decode(
-          _valueWithVarint(ValueTag.time, _zigzag(_int64Max)),
+      final largest = BinaryCodec.decode(
+        _valueWithVarint(ValueTag.time, _zigzag(_int64Max)),
+      ) as DateTime;
+      expect(
+        largest,
+        DateTime.fromMicrosecondsSinceEpoch(
+          (_int64Max ~/ BigInt.from(1000)).toInt(),
+          isUtc: true,
         ),
       );
-      _expectMalformed(
-        () => BinaryCodec.decode(
-          _valueWithVarint(ValueTag.time, _zigzag(_int64Min)),
+      final smallest = BinaryCodec.decode(
+        _valueWithVarint(ValueTag.time, _zigzag(_int64Min)),
+      ) as DateTime;
+      expect(
+        smallest,
+        DateTime.fromMicrosecondsSinceEpoch(
+          (_int64Min ~/ BigInt.from(1000)).toInt(),
+          isUtc: true,
         ),
       );
     });

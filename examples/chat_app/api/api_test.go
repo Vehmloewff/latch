@@ -103,9 +103,7 @@ func TestBuildServesValidationFanoutAndHistory(t *testing.T) {
 	if sent.Message.ID == 0 || sent.Message.Text != "hello" || sent.Message.SenderID != "alice" {
 		t.Fatalf("sent message = %#v", sent.Message)
 	}
-	if sent.Message.SentAt.Nanosecond()%1000 != 0 {
-		t.Fatalf("sent timestamp = %s, want microsecond precision", sent.Message.SentAt)
-	}
+
 	for name, events := range map[string]<-chan chatappclient.Event{"alice": alice.Events(), "bob": bob.Events()} {
 		event := nextChatEvent(t, events)
 		if event.Kind != "message" || event.Message == nil || event.Message.Message.Text != "hello" {

@@ -514,9 +514,8 @@ abstract final class BinaryCodec {
         return Uint8List.fromList(reader.blob());
       case ValueTag.time:
         final nanos = reader.svarint();
-        if (nanos.remainder(BigInt.from(1000)) != BigInt.zero) {
-          throw BinaryMalformedError('timestamp has sub-microsecond precision');
-        }
+        // Dart DateTime stores microseconds. Preserve the representable part
+        // and truncate sub-microsecond precision toward zero.
         final micros = nanos ~/ BigInt.from(1000);
         try {
           return DateTime.fromMicrosecondsSinceEpoch(micros.toInt(),
