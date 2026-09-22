@@ -156,6 +156,13 @@ export abstract class BaseConnection {
     try {
       env = decodeEnvelope(data);
     } catch {
+      this.failAllPending(new LatchError("malformed_frame", "malformed binary frame"));
+      this.handleClose();
+      try {
+        this.ws.close(1002, "malformed binary frame");
+      } catch {
+        // The socket may already be closed; pending calls are already failed.
+      }
       return;
     }
     const payload = env.payload;
@@ -182,12 +189,23 @@ export abstract class BaseConnection {
         break;
       }
       case "event":
-        this.dispatchEvent({ event: env.event, payload });
+        try {
+          this.dispatchEvent({ event: env.event, payload });
+        } catch {
+          // An invalid event is isolated from the WebSocket callback and RPCs.
+        }
         break;
-      case "connection_error":
-        this.failAllPending(new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error"));
+      case "connection_error": {
+        const error = new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error");
+        this.failAllPending(error);
         this.handleClose();
+        try {
+          this.ws.close(1000, "connection error");
+        } catch {
+          // The socket may already be closed.
+        }
         break;
+      }
       default:
         break;
     }
@@ -239,11 +257,19 @@ export function connectSocket(
 
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
+    let opened = false;
 
     ws.onopen = () => {
-      settled = true;
+      opened = true;
       ws.onopen = null;
-      resolve({ ws, bufferedMessages });
+      // Yield once before resolving. A connection_error can be delivered in
+      // the same turn as open and must reject connect() rather than racing the
+      // caller into constructing a connected client.
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ws, bufferedMessages });
+      }, 0);
     };
 
     ws.onerror = () => {
@@ -260,27 +286,41 @@ export function connectSocket(
 
     ws.onmessage = (ev) => {
       const data = asBytes(ev.data);
-      if (settled) {
-        // The socket is open, but BaseConnection has not installed its handler
-        // yet. Buffer binary frames for replay.
-        bufferedMessages.push(data);
-        return;
-      }
-
       let env: Envelope;
       try {
         env = decodeEnvelope(data);
       } catch {
-        settled = true;
-        ws.close(1002, "malformed binary event before setup");
-        reject(new Error("Latch: malformed binary response during setup"));
+        if (!settled) {
+          settled = true;
+          ws.close(1002, "malformed binary event before setup");
+          reject(new Error("Latch: malformed binary response during setup"));
+        } else {
+          // BaseConnection will report malformed post-open frames after it
+          // installs its handler. Keep this frame for that handler.
+          bufferedMessages.push(data);
+        }
         return;
       }
 
+      // Inspect connection_error before ordinary buffering. In particular,
+      // this covers a frame raced with the open transition.
       if (env.type === "connection_error") {
-        settled = true;
-        ws.close();
-        reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
+        if (!settled) {
+          settled = true;
+          ws.close(1000, "connection rejected");
+          reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
+          return;
+        }
+      }
+
+      if (settled) {
+        // The socket is open, but BaseConnection has not installed its message
+        // handler. Buffer binary frames for replay.
+        bufferedMessages.push(data);
+        return;
+      }
+      if (opened) {
+        bufferedMessages.push(data);
       }
     };
   });
@@ -363,6 +403,7 @@ const MAX_INT64 = (1n << 63n) - 1n;
 const MIN_INT64 = -(1n << 63n);
 const MAX_UINT64 = (1n << 64n) - 1n;
 
+
 function asBigInt(value: number | bigint): bigint {
   if (typeof value === "bigint") return value;
   if (!Number.isSafeInteger(value)) throw new RangeError("wire: integer must be a safe integer or bigint");
@@ -410,13 +451,22 @@ class Reader {
     return this.data[this.pos++];
   }
 
+  peekByte(): number {
+    if (this.pos >= this.data.length) throw new BinaryCodecError();
+    return this.data[this.pos];
+  }
+
   uvarint(): bigint {
     let value = 0n;
     for (let i = 0; i < 10; i++) {
       const b = this.byte();
       if (i === 9 && (b & 0xfe) !== 0) throw new BinaryCodecError();
       value |= BigInt(b & 0x7f) << BigInt(i * 7);
-      if ((b & 0x80) === 0) return value;
+      if ((b & 0x80) === 0) {
+        // A terminal zero payload on a multi-byte encoding is overlong.
+        if (i > 0 && (b & 0x7f) === 0) throw new BinaryCodecError();
+        return value;
+      }
     }
     throw new BinaryCodecError();
   }
@@ -447,6 +497,23 @@ class Reader {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array) && !(value instanceof Date);
+}
+
+function decodeUTF8(value: Uint8Array): string {
+  try {
+    return textDecoder.decode(value);
+  } catch {
+    throw new BinaryCodecError("wire: invalid UTF-8");
+  }
+}
+
+function setOwn<T>(object: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(object, key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value,
+  });
 }
 
 function encodeValueInto(writer: Writer, value: unknown, depth: number): void {
@@ -537,6 +604,13 @@ export function encodeStruct(fields: Record<number | string, unknown>): Uint8Arr
   return writer.result();
 }
 
+function structFieldID(key: string): bigint {
+  if (!/^[1-9][0-9]*$/.test(key)) throw new RangeError(`wire: invalid struct field number ${key}`);
+  const id = BigInt(key);
+  if (id > 0xffffffffn) throw new RangeError(`wire: invalid struct field number ${key}`);
+  return id;
+}
+
 function encodeStructInto(writer: Writer, fields: Record<number | string, unknown>, depth: number): void {
   if (depth > MAX_DEPTH) throw new BinaryCodecError("wire: maximum nesting depth exceeded");
   const entries = Object.entries(fields).map(([key, value]) => {
@@ -563,7 +637,7 @@ function decodeValueFrom(reader: Reader, depth: number): WireValue {
     case ValueTag.float64: {
       const bytes = reader.take(8); return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, true);
     }
-    case ValueTag.string: return textDecoder.decode(reader.blob());
+    case ValueTag.string: return decodeUTF8(reader.blob());
     case ValueTag.bytes: return reader.blob();
     case ValueTag.time: return reader.svarint();
     case ValueTag.list: {
@@ -577,10 +651,13 @@ function decodeValueFrom(reader: Reader, depth: number): WireValue {
       const count = reader.uvarint();
       if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
       const result: MapValue = {};
+      const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) {
         if (reader.byte() !== ValueTag.string) throw new BinaryCodecError();
-        const key = textDecoder.decode(reader.blob());
-        result[key] = decodeValueFrom(reader, depth + 1);
+        const key = decodeUTF8(reader.blob());
+        if (seen.has(key)) throw new BinaryCodecError("wire: duplicate map key");
+        seen.add(key);
+        setOwn(result, key, decodeValueFrom(reader, depth + 1));
       }
       return result;
     }
@@ -588,10 +665,14 @@ function decodeValueFrom(reader: Reader, depth: number): WireValue {
       const count = reader.uvarint();
       if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
       const result: StructValue = {};
+      const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) {
         const id = reader.uvarint();
         if (id === 0n || id > 0xffffffffn) throw new BinaryCodecError();
-        result[id.toString()] = decodeValueFrom(reader, depth + 1);
+        const key = id.toString();
+        if (seen.has(key)) throw new BinaryCodecError("wire: duplicate struct field");
+        seen.add(key);
+        setOwn(result, key, decodeValueFrom(reader, depth + 1));
       }
       return result;
     }
@@ -609,14 +690,55 @@ export function decodeValue(data: Uint8Array): WireValue {
 }
 
 export type WireType =
-  | { kind: "null" | "bool" | "int" | "uint" | "float32" | "float64" | "string" | "bytes" | "time" }
+  | { kind: "null" | "bool" | "float32" | "float64" | "string" }
+  | { kind: "int" | "uint"; bits?: 8 | 16 | 32 | 64; min?: number | bigint; max?: number | bigint }
+  | { kind: "bytes"; length?: number }
+  | { kind: "time"; unit?: "nanoseconds" }
   | { kind: "enum" }
-  | { kind: "nullable" | "list"; elem: WireType }
+  | { kind: "nullable"; elem: WireType }
+  | { kind: "list"; elem: WireType }
+  | { kind: "array"; length: number; elem: WireType }
   | { kind: "map"; value: WireType }
   | { kind: "named"; name: string }
   | { kind: "struct"; fields: Record<string, { name: string; type: WireType; optional?: boolean }> };
 
 export type WireTypeRegistry = Record<string, WireType>;
+
+
+function checkedBits(type: Extract<WireType, { kind: "int" | "uint" }>): 8 | 16 | 32 | 64 {
+  const bits = type.bits ?? 64;
+  if (bits !== 8 && bits !== 16 && bits !== 32 && bits !== 64) throw new TypeError("wire: invalid integer width");
+  return bits;
+}
+
+function integerBounds(type: Extract<WireType, { kind: "int" | "uint" }>): [bigint, bigint] {
+  const bits = checkedBits(type);
+  const min = type.kind === "int" ? -(1n << BigInt(bits - 1)) : 0n;
+  const max = type.kind === "int" ? (1n << BigInt(bits - 1)) - 1n : (1n << BigInt(bits)) - 1n;
+  const suppliedMin = type.min === undefined ? min : asBigInt(type.min);
+  const suppliedMax = type.max === undefined ? max : asBigInt(type.max);
+  if (suppliedMin < min || suppliedMax > max || suppliedMin > suppliedMax) throw new TypeError("wire: invalid integer range");
+  return [suppliedMin, suppliedMax];
+}
+
+function checkedInteger(value: unknown, type: Extract<WireType, { kind: "int" | "uint" }>): bigint {
+  if (typeof value !== "number" && typeof value !== "bigint") throw new TypeError("wire: expected integer");
+  const result = asBigInt(value);
+  const [min, max] = integerBounds(type);
+  if (result < min || result > max) throw new RangeError("wire: integer out of range");
+  return result;
+}
+
+function decodedInteger(value: bigint, type: Extract<WireType, { kind: "int" | "uint" }>): number | bigint {
+  const [min, max] = integerBounds(type);
+  if (value < min || value > max) throw new BinaryCodecError("wire: integer out of range");
+  if (type.bits === 64) return value;
+  return Number(value);
+}
+
+function expectTag(reader: Reader, expected: number): void {
+  if (reader.byte() !== expected) throw new BinaryCodecError("wire: unexpected value kind");
+}
 
 function encodeTypedInto(writer: Writer, value: unknown, type: WireType, registry: WireTypeRegistry, depth: number): void {
   if (depth > MAX_DEPTH) throw new BinaryCodecError("wire: maximum nesting depth exceeded");
@@ -627,38 +749,55 @@ function encodeTypedInto(writer: Writer, value: unknown, type: WireType, registr
     return;
   }
   if (type.kind === "nullable") {
-    if (value === null || value === undefined) { writer.byte(ValueTag.null); return; }
+    if (value === null) { writer.byte(ValueTag.null); return; }
+    if (value === undefined) throw new TypeError("wire: expected null or value");
     encodeTypedInto(writer, value, type.elem, registry, depth + 1);
     return;
   }
   switch (type.kind) {
-    case "null": writer.byte(ValueTag.null); return;
+    case "null": if (value !== null) throw new TypeError("wire: expected null"); writer.byte(ValueTag.null); return;
     case "bool": if (typeof value !== "boolean") throw new TypeError("wire: expected boolean"); writer.byte(value ? ValueTag.true : ValueTag.false); return;
-    case "int": writer.byte(ValueTag.int); writer.svarint(asBigInt(value as number | bigint)); return;
-    case "uint": writer.byte(ValueTag.uint); writer.uvarint(asBigInt(value as number | bigint)); return;
-    case "float32": writer.byte(ValueTag.float32); writer.raw(encodeRawFloat(Number(value), 4)); return;
-    case "float64": writer.byte(ValueTag.float64); writer.raw(encodeRawFloat(Number(value), 8)); return;
-    case "string": writer.byte(ValueTag.string); writer.blob(textEncoder.encode(String(value))); return;
-    case "bytes": if (!(value instanceof Uint8Array)) throw new TypeError("wire: expected bytes"); writer.byte(ValueTag.bytes); writer.blob(value); return;
-    case "time": writer.byte(ValueTag.time); writer.svarint(value as number | bigint); return;
-    case "enum": writer.byte(ValueTag.string); writer.blob(textEncoder.encode(String(value))); return;
+    case "int": writer.byte(ValueTag.int); writer.svarint(checkedInteger(value, type)); return;
+    case "uint": writer.byte(ValueTag.uint); writer.uvarint(checkedInteger(value, type)); return;
+    case "float32": if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("wire: expected finite number"); writer.byte(ValueTag.float32); writer.raw(encodeRawFloat(value, 4)); return;
+    case "float64": if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("wire: expected finite number"); writer.byte(ValueTag.float64); writer.raw(encodeRawFloat(value, 8)); return;
+    case "string": if (typeof value !== "string") throw new TypeError("wire: expected string"); writer.byte(ValueTag.string); writer.blob(textEncoder.encode(value)); return;
+    case "bytes":
+      if (!(value instanceof Uint8Array)) throw new TypeError("wire: expected bytes");
+      if (type.length !== undefined && value.length !== type.length) throw new RangeError("wire: bytes length mismatch");
+      writer.byte(ValueTag.bytes); writer.blob(value); return;
+    case "time": writer.byte(ValueTag.time); writer.svarint(checkedInteger(value, { kind: "int", bits: 64 })); return;
+    case "enum": if (typeof value !== "string") throw new TypeError("wire: expected enum string"); writer.byte(ValueTag.string); writer.blob(textEncoder.encode(value)); return;
     case "list":
       if (!Array.isArray(value)) throw new TypeError("wire: expected list");
       writer.byte(ValueTag.list); writer.uvarint(BigInt(value.length));
       for (const item of value) encodeTypedInto(writer, item, type.elem, registry, depth + 1);
       return;
+    case "array":
+      if (!Array.isArray(value)) throw new TypeError("wire: expected array");
+      if (value.length !== type.length) throw new RangeError("wire: array length mismatch");
+      writer.byte(ValueTag.list); writer.uvarint(BigInt(value.length));
+      for (const item of value) encodeTypedInto(writer, item, type.elem, registry, depth + 1);
+      return;
     case "map":
       if (!isPlainObject(value)) throw new TypeError("wire: expected map");
-      encodeMapTypedInto(writer, value, type.value, registry, depth);
-      return;
+      encodeMapTypedInto(writer, value, type.value, registry, depth); return;
     case "struct": {
       if (!isPlainObject(value)) throw new TypeError("wire: expected struct");
-      const fields = Object.entries(type.fields).filter(([, field]) => !field.optional || (value as Record<string, unknown>)[field.name] !== undefined);
-      writer.byte(ValueTag.struct); writer.uvarint(BigInt(fields.length));
+      const fields = Object.entries(type.fields);
+      for (const [id] of fields) structFieldID(id);
+      const encoded: Array<[bigint, { name: string; type: WireType; optional?: boolean }, unknown]> = [];
       for (const [id, field] of fields) {
-        writer.uvarint(BigInt(id));
-        encodeTypedInto(writer, (value as Record<string, unknown>)[field.name], field.type, registry, depth + 1);
+        const hasField = Object.prototype.hasOwnProperty.call(value, field.name);
+        const fieldValue = value[field.name];
+        if (!hasField || (field.optional && fieldValue === undefined)) {
+          if (!field.optional) throw new TypeError(`wire: missing required field ${field.name}`);
+          continue;
+        }
+        encoded.push([BigInt(id), field, fieldValue]);
       }
+      writer.byte(ValueTag.struct); writer.uvarint(BigInt(encoded.length));
+      for (const [id, field, fieldValue] of encoded) { writer.uvarint(id); encodeTypedInto(writer, fieldValue, field.type, registry, depth + 1); }
       return;
     }
   }
@@ -679,38 +818,59 @@ export function encodeTyped(value: unknown, type: WireType, registry: WireTypeRe
   return writer.result();
 }
 
-function decodeTypedValue(value: WireValue, type: WireType, registry: WireTypeRegistry): unknown {
+function decodeTypedFrom(reader: Reader, type: WireType, registry: WireTypeRegistry, depth: number): unknown {
+  if (depth > MAX_DEPTH) throw new BinaryCodecError("wire: maximum nesting depth exceeded");
   if (type.kind === "named") {
     const named = registry[type.name];
     if (!named) throw new BinaryCodecError(`wire: unknown named type ${type.name}`);
-    return decodeTypedValue(value, named, registry);
+    return decodeTypedFrom(reader, named, registry, depth);
   }
-  if (value === null) return null;
-  if (type.kind === "nullable") return decodeTypedValue(value, type.elem, registry);
+  if (type.kind === "nullable") {
+    if (reader.peekByte() === ValueTag.null) { reader.byte(); return null; }
+    return decodeTypedFrom(reader, type.elem, registry, depth + 1);
+  }
   switch (type.kind) {
-    case "int": case "uint": return typeof value === "bigint" ? Number(value) : value;
-    case "float32": case "float64": case "string": case "bool": case "bytes": case "enum": case "time": return value;
-    case "null": return null;
-    case "list": if (!Array.isArray(value)) throw new BinaryCodecError(); return value.map(item => decodeTypedValue(item, type.elem, registry));
+    case "null": expectTag(reader, ValueTag.null); return null;
+    case "bool": { const tag = reader.byte(); if (tag === ValueTag.false) return false; if (tag === ValueTag.true) return true; throw new BinaryCodecError("wire: unexpected value kind"); }
+    case "int": expectTag(reader, ValueTag.int); return decodedInteger(reader.svarint(), type);
+    case "uint": expectTag(reader, ValueTag.uint); return decodedInteger(reader.uvarint(), type);
+    case "float32": { expectTag(reader, ValueTag.float32); const b = reader.take(4); const n = new DataView(b.buffer, b.byteOffset, 4).getFloat32(0, true); if (!Number.isFinite(n)) throw new BinaryCodecError(); return n; }
+    case "float64": { expectTag(reader, ValueTag.float64); const b = reader.take(8); const n = new DataView(b.buffer, b.byteOffset, 8).getFloat64(0, true); if (!Number.isFinite(n)) throw new BinaryCodecError(); return n; }
+    case "string": expectTag(reader, ValueTag.string); return decodeUTF8(reader.blob());
+    case "bytes": { expectTag(reader, ValueTag.bytes); const value = reader.blob(); if (type.length !== undefined && value.length !== type.length) throw new BinaryCodecError("wire: bytes length mismatch"); return value; }
+    case "time": expectTag(reader, ValueTag.time); return reader.svarint();
+    case "enum": expectTag(reader, ValueTag.string); return decodeUTF8(reader.blob());
+    case "list": {
+      expectTag(reader, ValueTag.list); const count = reader.uvarint(); if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
+      const result: unknown[] = []; for (let i = 0; i < Number(count); i++) result.push(decodeTypedFrom(reader, type.elem, registry, depth + 1)); return result;
+    }
+    case "array": {
+      expectTag(reader, ValueTag.list); const count = reader.uvarint(); if (count !== BigInt(type.length)) throw new BinaryCodecError("wire: array length mismatch");
+      const result: unknown[] = []; for (let i = 0; i < type.length; i++) result.push(decodeTypedFrom(reader, type.elem, registry, depth + 1)); return result;
+    }
     case "map": {
-      if (!isPlainObject(value)) throw new BinaryCodecError();
-      const result: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) result[key] = decodeTypedValue(item, type.value, registry);
+      expectTag(reader, ValueTag.map); const count = reader.uvarint(); if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
+      const result: Record<string, unknown> = {}; const seen = new Set<string>();
+      for (let i = 0; i < Number(count); i++) { expectTag(reader, ValueTag.string); const key = decodeUTF8(reader.blob()); if (seen.has(key)) throw new BinaryCodecError("wire: duplicate map key"); seen.add(key); setOwn(result, key, decodeTypedFrom(reader, type.value, registry, depth + 1)); }
       return result;
     }
     case "struct": {
-      if (!isPlainObject(value)) throw new BinaryCodecError();
-      const result: Record<string, unknown> = {};
-      for (const [id, field] of Object.entries(type.fields)) {
-        if (Object.prototype.hasOwnProperty.call(value, id)) result[field.name] = decodeTypedValue(value[id], field.type, registry);
-      }
+      expectTag(reader, ValueTag.struct); const count = reader.uvarint(); if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
+      const fields = new Map<string, { name: string; type: WireType; optional?: boolean }>();
+      for (const [id, field] of Object.entries(type.fields)) { const key = structFieldID(id).toString(); if (fields.has(key)) throw new BinaryCodecError("wire: duplicate schema field"); fields.set(key, field); }
+      const result: Record<string, unknown> = {}; const seen = new Set<string>();
+      for (let i = 0; i < Number(count); i++) { const id = reader.uvarint(); if (id === 0n || id > 0xffffffffn) throw new BinaryCodecError(); const key = id.toString(); if (seen.has(key)) throw new BinaryCodecError("wire: duplicate struct field"); seen.add(key); const field = fields.get(key); if (field) setOwn(result, field.name, decodeTypedFrom(reader, field.type, registry, depth + 1)); else decodeValueFrom(reader, depth + 1); }
+      for (const [id, field] of fields) if (!field.optional && !seen.has(id)) throw new BinaryCodecError(`wire: missing required field ${field.name}`);
       return result;
     }
   }
 }
 
 export function decodeTyped(data: Uint8Array, type: WireType, registry: WireTypeRegistry): unknown {
-  return decodeTypedValue(decodeValue(data), type, registry);
+  const reader = new Reader(data);
+  const value = decodeTypedFrom(reader, type, registry, 0);
+  if (!reader.done()) throw new BinaryCodecError();
+  return value;
 }
 
 /** Encodes a timestamp as signed nanoseconds since the Unix epoch. */
@@ -741,7 +901,7 @@ export function decodeEnvelope(data: Uint8Array): Envelope {
   if (reader.byte() !== 1) throw new BinaryCodecError();
   const type = frameNames[reader.byte()];
   if (!type) throw new BinaryCodecError();
-  const readString = (): string => textDecoder.decode(reader.blob());
+  const readString = (): string => decodeUTF8(reader.blob());
   const result: Envelope = {
     type,
     version: readString(),
@@ -816,7 +976,7 @@ export interface SendMessageResponse {
 }
 
 export const __latchWireTypes: WireTypeRegistry = {
-  "ChatMessage": { kind: "struct", fields: {1: { name: "id", type: { kind: "int" } },2: { name: "room", type: { kind: "string" } },3: { name: "senderId", type: { kind: "string" } },4: { name: "text", type: { kind: "string" } },5: { name: "sentAt", type: { kind: "time" } } }},
+  "ChatMessage": { kind: "struct", fields: {1: { name: "id", type: { kind: "int", bits: 32, min: -2147483648, max: 2147483647 } },2: { name: "room", type: { kind: "string" } },3: { name: "senderId", type: { kind: "string" } },4: { name: "text", type: { kind: "string" } },5: { name: "sentAt", type: { kind: "time", unit: "nanoseconds" } } }},
   "Event": { kind: "struct", fields: {1: { name: "kind", type: { kind: "string" } },2: { name: "message", type: { kind: "nullable", elem: { kind: "named", name: "MessageReceived" } }, optional: true },3: { name: "presence", type: { kind: "nullable", elem: { kind: "named", name: "PresenceChanged" } }, optional: true } }},
   "HistoryRequest": { kind: "struct", fields: {1: { name: "room", type: { kind: "string" } } }},
   "HistoryResponse": { kind: "struct", fields: {1: { name: "messages", type: { kind: "list", elem: { kind: "named", name: "ChatMessage" } } } }},

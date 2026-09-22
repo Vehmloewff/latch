@@ -322,7 +322,7 @@ function decodeValueFrom(reader: Reader, depth: number): WireValue {
     case ValueTag.map: {
       const count = reader.uvarint();
       if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
-      const result = Object.create(null) as MapValue;
+      const result: MapValue = {};
       const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) {
         if (reader.byte() !== ValueTag.string) throw new BinaryCodecError();
@@ -336,7 +336,7 @@ function decodeValueFrom(reader: Reader, depth: number): WireValue {
     case ValueTag.struct: {
       const count = reader.uvarint();
       if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
-      const result = Object.create(null) as StructValue;
+      const result: StructValue = {};
       const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) {
         const id = reader.uvarint();
@@ -522,7 +522,7 @@ function decodeTypedFrom(reader: Reader, type: WireType, registry: WireTypeRegis
     }
     case "map": {
       expectTag(reader, ValueTag.map); const count = reader.uvarint(); if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
-      const result = Object.create(null) as Record<string, unknown>; const seen = new Set<string>();
+      const result: Record<string, unknown> = {}; const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) { expectTag(reader, ValueTag.string); const key = decodeUTF8(reader.blob()); if (seen.has(key)) throw new BinaryCodecError("wire: duplicate map key"); seen.add(key); setOwn(result, key, decodeTypedFrom(reader, type.value, registry, depth + 1)); }
       return result;
     }
@@ -530,7 +530,7 @@ function decodeTypedFrom(reader: Reader, type: WireType, registry: WireTypeRegis
       expectTag(reader, ValueTag.struct); const count = reader.uvarint(); if (count > BigInt(MAX_CONTAINER)) throw new BinaryCodecError();
       const fields = new Map<string, { name: string; type: WireType; optional?: boolean }>();
       for (const [id, field] of Object.entries(type.fields)) { const key = structFieldID(id).toString(); if (fields.has(key)) throw new BinaryCodecError("wire: duplicate schema field"); fields.set(key, field); }
-      const result = Object.create(null) as Record<string, unknown>; const seen = new Set<string>();
+      const result: Record<string, unknown> = {}; const seen = new Set<string>();
       for (let i = 0; i < Number(count); i++) { const id = reader.uvarint(); if (id === 0n || id > 0xffffffffn) throw new BinaryCodecError(); const key = id.toString(); if (seen.has(key)) throw new BinaryCodecError("wire: duplicate struct field"); seen.add(key); const field = fields.get(key); if (field) setOwn(result, field.name, decodeTypedFrom(reader, field.type, registry, depth + 1)); else decodeValueFrom(reader, depth + 1); }
       for (const [id, field] of fields) if (!field.optional && !seen.has(id)) throw new BinaryCodecError(`wire: missing required field ${field.name}`);
       return result;
