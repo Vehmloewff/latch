@@ -100,12 +100,18 @@ func splitWords(s string) []string {
 			flush()
 		case r >= 'A' && r <= 'Z':
 			// Start a new word on an upper-case letter unless it continues
-			// an existing all-caps run (e.g. "ID" stays one word).
+			// an existing all-caps run (e.g. "ID" stays one word). A single
+			// uppercase prefix also stays with a lowercase suffix, so Go's
+			// common initialism "IDs" becomes "Ids" instead of "IDs".
 			if i > 0 {
 				prev := runes[i-1]
 				prevUpper := prev >= 'A' && prev <= 'Z'
 				nextLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
-				if !prevUpper || nextLower {
+				upperRunBefore := 0
+				for j := i - 1; j >= 0 && runes[j] >= 'A' && runes[j] <= 'Z'; j-- {
+					upperRunBefore++
+				}
+				if !prevUpper || (nextLower && upperRunBefore > 1) {
 					flush()
 				}
 			}

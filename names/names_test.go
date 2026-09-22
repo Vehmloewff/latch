@@ -21,6 +21,8 @@ func TestCamelCase(t *testing.T) {
 		"user.get":    "userGet",
 		"DisplayName": "displayName",
 		"project_id":  "projectId",
+		"MemberIDs":   "memberIds",
+		"URLValue":    "urlValue",
 	}
 	for in, want := range cases {
 		if got := CamelCase(in); got != want {

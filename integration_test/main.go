@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	root        = "."
-	exampleName = "chat_app_example"
-	exampleDir  = exampleName
+	root              = "."
+	exampleName       = "chat_app_example"
+	exampleDir        = exampleName
+	typescriptRuntime = "codegen/typescript/binary_runtime"
+	dartRuntime       = "codegen/dart/binary_runtime"
 )
 
 func run(dir, name string, args ...string) {
@@ -34,6 +36,8 @@ func main() {
 
 func runExample(selected map[string]bool) {
 	ex := filepath.Join(root, exampleDir)
+	runBinaryRuntimeTests(selected)
+
 	fmt.Printf("\n=== example: %s ===\n", exampleName)
 	run(ex, "go", "run", "./cmd/generate_clients")
 
@@ -42,7 +46,7 @@ func runExample(selected map[string]bool) {
 
 	// Go is compiled and tested after the example server starts below.
 	if selected["typescript"] {
-		run(ts, "npm", "install")
+		run(ts, "npm", "ci")
 		run(ts, "npm", "run", "check")
 	}
 	if selected["dart"] {
@@ -110,6 +114,19 @@ func runExample(selected map[string]bool) {
 		if err := dartMain.Run(); err != nil {
 			panic(fmt.Errorf("%s Dart example: %w", exampleName, err))
 		}
+	}
+}
+
+func runBinaryRuntimeTests(selected map[string]bool) {
+	if selected["typescript"] {
+		fmt.Println("\n=== TypeScript binary runtime ===")
+		run(filepath.Join(root, typescriptRuntime), "npm", "ci")
+		run(filepath.Join(root, typescriptRuntime), "npm", "test")
+	}
+	if selected["dart"] {
+		fmt.Println("\n=== Dart binary runtime ===")
+		run(filepath.Join(root, dartRuntime), "dart", "pub", "get")
+		run(filepath.Join(root, dartRuntime), "dart", "test")
 	}
 }
 

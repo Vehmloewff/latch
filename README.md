@@ -199,17 +199,15 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 go build ./...
 go test ./...
 
-# Binary runtime tests
-(cd codegen/typescript/binary_runtime && npm ci && npm test)
-(cd codegen/dart/binary_runtime && dart pub get && dart test)
-
-# Cross-language example integration tests
+# Full integration runner: installs TypeScript/Dart dependencies, runs both
+# standalone binary-runtime suites, regenerates clients, and runs the example
 go run ./integration_test
 ```
 
-The binary runtime tests exercise the standalone TypeScript and Dart codecs.
-The cross-language runner is separate from `go test`: it regenerates the chat
-app example's clients, runs the selected language checks, starts its Go server,
-and runs the integration programs. Language arguments are optional: `go`,
-`dart`, and `typescript`; with no arguments, all three run. The complete
-working example is in [`chat_app_example`](chat_app_example).
+The cross-language runner is separate from `go test`: it installs the selected
+language dependencies, runs the standalone TypeScript and Dart binary-runtime
+tests, regenerates the chat app example's clients, runs the selected language
+checks, starts its Go server, and runs the integration programs. Language
+arguments are optional: `go`, `dart`, and `typescript`; with no arguments, all
+three run. The complete working example is in
+[`chat_app_example`](chat_app_example).
