@@ -61,11 +61,66 @@ Future<HandshakeResult> connectSocket(Uri url, String version) async {
   await channel.ready;
 
   final bufferedMessages = <Uint8List>[];
+  final opened = Completer<HandshakeResult>();
+  var watchingFirstFrame = true;
   late StreamSubscription<dynamic> sub;
+
+  void rejectOpen(Object error, StackTrace stack) {
+    if (opened.isCompleted) return;
+    try {
+      channel.sink.close(1000);
+    } catch (_) {}
+    opened.completeError(error, stack);
+  }
+
   sub = channel.stream.listen((dynamic data) {
-    bufferedMessages.add(_messageBytes(data));
+    late final Uint8List bytes;
+    try {
+      bytes = _messageBytes(data);
+      if (watchingFirstFrame) {
+        final envelope = BinaryEnvelope.decode(bytes);
+        watchingFirstFrame = false;
+        if (envelope.type == FrameCode.connectionError) {
+          rejectOpen(
+            LatchError(
+              'connect_rejected',
+              envelope.error.isEmpty ? 'connection rejected' : envelope.error,
+            ),
+            StackTrace.current,
+          );
+          return;
+        }
+      }
+    } catch (error, stack) {
+      if (watchingFirstFrame) {
+        rejectOpen(
+          LatchError('connect_rejected', 'malformed connection frame'),
+          stack,
+        );
+        return;
+      }
+      rethrow;
+    }
+    bufferedMessages.add(bytes);
+    if (!opened.isCompleted) {
+      opened.complete(HandshakeResult(channel, sub, bufferedMessages));
+    }
+  }, onError: (Object error, StackTrace stack) {
+    if (watchingFirstFrame) {
+      rejectOpen(
+        LatchError('connect_rejected', 'connection failed'),
+        stack,
+      );
+    }
   });
-  return HandshakeResult(channel, sub, bufferedMessages);
+
+  Timer(Duration.zero, () {
+    if (!opened.isCompleted) {
+      watchingFirstFrame = false;
+      opened.complete(HandshakeResult(channel, sub, bufferedMessages));
+    }
+  });
+  return opened.future;
 }
 
 class _PendingRequest {
@@ -119,13 +174,18 @@ abstract class BaseConnection {
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
     _pending[id] = _PendingRequest(completer);
-    final request = BinaryEnvelope(
-      type: FrameCode.request,
-      id: id,
-      method: method,
-      payload: BinaryCodec.encode(payload),
-    );
-    _channel.sink.add(request.encode());
+    try {
+      final request = BinaryEnvelope(
+        type: FrameCode.request,
+        id: id,
+        method: method,
+        payload: BinaryCodec.encode(payload),
+      );
+      _channel.sink.add(request.encode());
+    } catch (error, stack) {
+      _pending.remove(id);
+      completer.completeError(error, stack);
+    }
     return completer.future.then((raw) => decode(raw));
   }
 
@@ -136,6 +196,13 @@ abstract class BaseConnection {
     try {
       env = BinaryEnvelope.decode(_messageBytes(data));
     } catch (_) {
+      _failAllPending(
+        LatchError('protocol_violation', 'malformed binary frame'),
+      );
+      try {
+        _channel.sink.close(1002);
+      } catch (_) {}
+      _handleClose();
       return;
     }
 
@@ -144,7 +211,9 @@ abstract class BaseConnection {
         final pending = _pending.remove(env.id);
         if (pending != null) {
           try {
-            pending.completer.complete(BinaryCodec.decode(env.payload));
+            pending.completer.complete(
+              env.payload.isEmpty ? null : BinaryCodec.decode(env.payload),
+            );
           } catch (error, stack) {
             pending.completer.completeError(error, stack);
           }
@@ -169,6 +238,9 @@ abstract class BaseConnection {
           env.errorCode.isEmpty ? 'internal_error' : env.errorCode,
           env.error.isEmpty ? 'connection error' : env.error,
         ));
+        try {
+          _channel.sink.close(1000);
+        } catch (_) {}
         _handleClose();
         break;
       default:

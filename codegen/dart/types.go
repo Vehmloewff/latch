@@ -22,8 +22,10 @@ func dartType(ref protocol.TypeRef, typeNames map[string]string) string {
 	case protocol.KindBool:
 		return "bool"
 	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32,
-		protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:
+		protocol.KindInt64, protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32:
 		return "int"
+	case protocol.KindUint64:
+		return "BigInt"
 	case protocol.KindFloat32, protocol.KindFloat64:
 		return "double"
 	case protocol.KindPointer:
@@ -33,6 +35,9 @@ func dartType(ref protocol.TypeRef, typeNames map[string]string) string {
 		}
 		return inner + "?"
 	case protocol.KindSlice, protocol.KindArray:
+		if ref.Elem.Kind == protocol.KindUint8 {
+			return "Uint8List"
+		}
 		return "List<" + dartType(*ref.Elem, typeNames) + ">"
 	case protocol.KindMap:
 		return "Map<String, " + dartType(*ref.MapValue, typeNames) + ">"
@@ -76,10 +81,12 @@ func decodeExpr(expr string, ref protocol.TypeRef, typeNames map[string]string) 
 		return fmt.Sprintf("%s as DateTime", expr)
 	case protocol.KindBool:
 		return fmt.Sprintf("%s as bool", expr)
-	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32:
+	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32, protocol.KindInt64:
 		return fmt.Sprintf("%s as int", expr)
-	case protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:
+	case protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32:
 		return fmt.Sprintf("(%s as UIntValue).value.toInt()", expr)
+	case protocol.KindUint64:
+		return fmt.Sprintf("(%s as UIntValue).value", expr)
 	case protocol.KindFloat32:
 		return fmt.Sprintf("(%s as Float32Value).value", expr)
 	case protocol.KindFloat64:
@@ -130,7 +137,7 @@ func fieldDecodeExpr(f protocol.Field, fieldNumber int, typeNames map[string]str
 func encodeExpr(expr string, ref protocol.TypeRef, typeNames map[string]string) string {
 	switch ref.Kind {
 	case protocol.KindString, protocol.KindBool,
-		protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32,
+		protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32, protocol.KindInt64,
 		protocol.KindFloat64, protocol.KindTime:
 		return expr
 	case protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:

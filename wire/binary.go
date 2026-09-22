@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -38,6 +39,7 @@ const maxContainer = 1 << 24
 var (
 	ErrMalformed          = errors.New("wire: malformed binary value")
 	ErrMissingFieldNumber = errors.New("wire: exported field must have a non-zero latch field number")
+	ErrInvalidFieldNumber = errors.New("wire: invalid latch field number")
 )
 
 type encoder struct{ b []byte }
@@ -111,6 +113,9 @@ func (e *encoder) value(v reflect.Value, depth int) error {
 		binary.LittleEndian.PutUint64(x[:], math.Float64bits(v.Float()))
 		e.b = append(e.b, x[:]...)
 	case reflect.String:
+		if !utf8.ValidString(v.String()) {
+			return fmt.Errorf("wire: invalid UTF-8 string")
+		}
 		e.byte(KindString)
 		e.blob([]byte(v.String()))
 	case reflect.Slice:
@@ -150,6 +155,9 @@ func (e *encoder) value(v reflect.Value, depth int) error {
 		e.u(uint64(v.Len()))
 		iter := v.MapRange()
 		for iter.Next() {
+			if !utf8.ValidString(iter.Key().String()) {
+				return fmt.Errorf("wire: invalid UTF-8 map key")
+			}
 			e.byte(KindString)
 			e.blob([]byte(iter.Key().String()))
 			if err := e.value(iter.Value(), depth+1); err != nil {
@@ -192,14 +200,14 @@ func (e *encoder) value(v reflect.Value, depth int) error {
 }
 
 func fieldNumber(sf reflect.StructField) (uint64, error) {
-	t := sf.Tag.Get("latch")
-	if t == "" {
+	t, ok := sf.Tag.Lookup("latch")
+	if !ok {
 		return 0, ErrMissingFieldNumber
 	}
 	t = strings.Split(t, ",")[0]
 	n, err := strconv.ParseUint(t, 10, 32)
 	if err != nil || n == 0 {
-		return 0, ErrMissingFieldNumber
+		return 0, ErrInvalidFieldNumber
 	}
 	return n, nil
 }
@@ -225,8 +233,15 @@ func (d *decoder) byte() (byte, error) {
 	return x[0], nil
 }
 func (d *decoder) u() (uint64, error) {
+	if d.pos < 0 || d.pos > len(d.b) {
+		return 0, ErrMalformed
+	}
 	x, n := binary.Uvarint(d.b[d.pos:])
 	if n <= 0 {
+		return 0, ErrMalformed
+	}
+	var encoded [binary.MaxVarintLen64]byte
+	if n != binary.PutUvarint(encoded[:], x) {
 		return 0, ErrMalformed
 	}
 	d.pos += n
@@ -245,6 +260,14 @@ func (d *decoder) blob() ([]byte, error) {
 		return nil, ErrMalformed
 	}
 	return d.take(int(n))
+}
+
+func (d *decoder) stringBlob() ([]byte, error) {
+	x, err := d.blob()
+	if err != nil || !utf8.Valid(x) {
+		return nil, ErrMalformed
+	}
+	return x, nil
 }
 
 // Decode decodes exactly one value into dst, which must be a non-nil pointer.
@@ -288,6 +311,9 @@ func (d *decoder) value(out reflect.Value, depth int) error {
 	return d.decodeKnown(k, out, depth)
 }
 func (d *decoder) decodeKnown(k byte, o reflect.Value, depth int) error {
+	if o.Kind() == reflect.Interface {
+		return d.decodeInterface(k, o, depth)
+	}
 	switch k {
 	case KindBoolFalse, KindBoolTrue:
 		if o.Kind() != reflect.Bool {
@@ -308,7 +334,7 @@ func (d *decoder) decodeKnown(k byte, o reflect.Value, depth int) error {
 		if e != nil {
 			return e
 		}
-		if o.Kind() < reflect.Uint || o.Kind() > reflect.Uint64 || o.OverflowUint(u) {
+		if !isUnsignedKind(o.Kind()) || o.OverflowUint(u) {
 			return fmt.Errorf("wire: unsigned integer out of range for %s", o.Type())
 		}
 		o.SetUint(u)
@@ -325,7 +351,7 @@ func (d *decoder) decodeKnown(k byte, o reflect.Value, depth int) error {
 		}
 		o.SetFloat(math.Float64frombits(binary.LittleEndian.Uint64(x)))
 	case KindString:
-		x, e := d.blob()
+		x, e := d.stringBlob()
 		if e != nil || o.Kind() != reflect.String {
 			return ErrMalformed
 		}
@@ -353,6 +379,136 @@ func (d *decoder) decodeKnown(k byte, o reflect.Value, depth int) error {
 	}
 	return nil
 }
+
+func isUnsignedKind(k reflect.Kind) bool {
+	return k == reflect.Uint || k == reflect.Uint8 || k == reflect.Uint16 || k == reflect.Uint32 || k == reflect.Uint64 || k == reflect.Uintptr
+}
+
+func setInterfaceValue(out reflect.Value, value any) error {
+	v := reflect.ValueOf(value)
+	if !v.IsValid() {
+		out.Set(reflect.Zero(out.Type()))
+		return nil
+	}
+	if !v.Type().AssignableTo(out.Type()) {
+		return fmt.Errorf("wire: decoded %s does not implement %s", v.Type(), out.Type())
+	}
+	out.Set(v)
+	return nil
+}
+
+func (d *decoder) decodeInterface(k byte, out reflect.Value, depth int) error {
+	var value any
+	switch k {
+	case KindBoolFalse, KindBoolTrue:
+		value = k == KindBoolTrue
+	case KindInt:
+		v, err := d.n()
+		if err != nil {
+			return err
+		}
+		value = v
+	case KindUint:
+		v, err := d.u()
+		if err != nil {
+			return err
+		}
+		value = v
+	case KindFloat32:
+		x, err := d.take(4)
+		if err != nil {
+			return err
+		}
+		value = math.Float32frombits(binary.LittleEndian.Uint32(x))
+	case KindFloat64:
+		x, err := d.take(8)
+		if err != nil {
+			return err
+		}
+		value = math.Float64frombits(binary.LittleEndian.Uint64(x))
+	case KindString:
+		x, err := d.stringBlob()
+		if err != nil {
+			return err
+		}
+		value = string(x)
+	case KindBytes:
+		x, err := d.blob()
+		if err != nil {
+			return err
+		}
+		value = x
+	case KindTime:
+		n, err := d.n()
+		if err != nil {
+			return err
+		}
+		value = time.Unix(0, n).UTC()
+	case KindList:
+		n, err := d.u()
+		if err != nil || n > maxContainer {
+			return ErrMalformed
+		}
+		values := make([]any, int(n))
+		for i := range values {
+			if err := d.value(reflect.ValueOf(&values[i]).Elem(), depth+1); err != nil {
+				return err
+			}
+		}
+		value = values
+	case KindMap:
+		n, err := d.u()
+		if err != nil || n > maxContainer {
+			return ErrMalformed
+		}
+		values := make(map[string]any, int(n))
+		for i := uint64(0); i < n; i++ {
+			keyKind, err := d.byte()
+			if err != nil || keyKind != KindString {
+				return ErrMalformed
+			}
+			key, err := d.stringBlob()
+			if err != nil {
+				return err
+			}
+			keyString := string(key)
+			if _, exists := values[keyString]; exists {
+				return fmt.Errorf("wire: duplicate map key %q", keyString)
+			}
+			var item any
+			if err := d.value(reflect.ValueOf(&item).Elem(), depth+1); err != nil {
+				return err
+			}
+			values[keyString] = item
+		}
+		value = values
+	case KindStruct:
+		n, err := d.u()
+		if err != nil || n > maxContainer {
+			return ErrMalformed
+		}
+		values := make(map[uint64]any, int(n))
+		for i := uint64(0); i < n; i++ {
+			id, err := d.u()
+			if err != nil || id == 0 || id > math.MaxUint32 {
+				return ErrMalformed
+			}
+			if _, exists := values[id]; exists {
+				return fmt.Errorf("wire: duplicate incoming field number %d", id)
+			}
+			var item any
+			if err := d.value(reflect.ValueOf(&item).Elem(), depth+1); err != nil {
+				return err
+			}
+			values[id] = item
+		}
+		value = values
+	default:
+		return ErrMalformed
+	}
+	return setInterfaceValue(out, value)
+}
+
 func (d *decoder) list(o reflect.Value, depth int) error {
 	n, e := d.u()
 	if e != nil || n > maxContainer {
@@ -380,20 +536,26 @@ func (d *decoder) dict(o reflect.Value, depth int) error {
 		return ErrMalformed
 	}
 	o.Set(reflect.MakeMapWithSize(o.Type(), int(n)))
+	seen := make(map[string]struct{}, int(n))
 	for i := uint64(0); i < n; i++ {
 		k, e := d.byte()
 		if e != nil || k != KindString {
 			return ErrMalformed
 		}
-		x, e := d.blob()
+		x, e := d.stringBlob()
 		if e != nil {
 			return e
 		}
+		key := string(x)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("wire: duplicate map key %q", key)
+		}
+		seen[key] = struct{}{}
 		v := reflect.New(o.Type().Elem()).Elem()
 		if e = d.value(v, depth+1); e != nil {
 			return e
 		}
-		o.SetMapIndex(reflect.ValueOf(string(x)).Convert(o.Type().Key()), v)
+		o.SetMapIndex(reflect.ValueOf(key).Convert(o.Type().Key()), v)
 	}
 	return nil
 }
@@ -423,11 +585,16 @@ func (d *decoder) structValue(o reflect.Value, depth int) error {
 		}
 		by[id] = i
 	}
+	seen := make(map[uint64]struct{}, int(n))
 	for i := uint64(0); i < n; i++ {
 		id, e := d.u()
-		if e != nil {
-			return e
+		if e != nil || id == 0 || id > math.MaxUint32 {
+			return ErrMalformed
 		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("wire: duplicate incoming field number %d", id)
+		}
+		seen[id] = struct{}{}
 		idx, ok := by[id]
 		if !ok {
 			if e := d.skip(depth + 1); e != nil {
@@ -461,7 +628,10 @@ func (d *decoder) skip(depth int) error {
 	case KindFloat64:
 		_, e = d.take(8)
 		return e
-	case KindString, KindBytes:
+	case KindString:
+		_, e = d.stringBlob()
+		return e
+	case KindBytes:
 		_, e = d.blob()
 		return e
 	case KindList, KindMap:
@@ -469,15 +639,22 @@ func (d *decoder) skip(depth int) error {
 		if e != nil || n > maxContainer {
 			return ErrMalformed
 		}
+		seen := make(map[string]struct{}, int(n))
 		for i := uint64(0); i < n; i++ {
 			if k == KindMap {
 				t, e := d.byte()
 				if e != nil || t != KindString {
 					return ErrMalformed
 				}
-				if _, e = d.blob(); e != nil {
+				key, e := d.stringBlob()
+				if e != nil {
 					return e
 				}
+				keyString := string(key)
+				if _, exists := seen[keyString]; exists {
+					return fmt.Errorf("wire: duplicate map key %q", keyString)
+				}
+				seen[keyString] = struct{}{}
 			}
 			if e = d.skip(depth + 1); e != nil {
 				return e
@@ -489,10 +666,16 @@ func (d *decoder) skip(depth int) error {
 		if e != nil || n > maxContainer {
 			return ErrMalformed
 		}
+		seen := make(map[uint64]struct{}, int(n))
 		for i := uint64(0); i < n; i++ {
-			if _, e = d.u(); e != nil {
-				return e
+			id, e := d.u()
+			if e != nil || id == 0 || id > math.MaxUint32 {
+				return ErrMalformed
 			}
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("wire: duplicate incoming field number %d", id)
+			}
+			seen[id] = struct{}{}
 			if e = d.skip(depth + 1); e != nil {
 				return e
 			}

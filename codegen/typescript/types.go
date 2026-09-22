@@ -16,6 +16,8 @@ func tsType(ref protocol.TypeRef, typeNames map[string]string) string {
 		return "string"
 	case protocol.KindBool:
 		return "boolean"
+	case protocol.KindInt64, protocol.KindUint64:
+		return "bigint"
 	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32,
 		protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32,
 		protocol.KindFloat32, protocol.KindFloat64:
@@ -26,8 +28,20 @@ func tsType(ref protocol.TypeRef, typeNames map[string]string) string {
 		return "bigint"
 	case protocol.KindPointer:
 		return tsType(*ref.Elem, typeNames) + " | null"
-	case protocol.KindSlice, protocol.KindArray:
+	case protocol.KindSlice:
+		if ref.Elem.Kind == protocol.KindUint8 {
+			return "Uint8Array"
+		}
 		return arrayElemType(*ref.Elem, typeNames) + "[]"
+	case protocol.KindArray:
+		if ref.Elem.Kind == protocol.KindUint8 {
+			return "Uint8Array"
+		}
+		if ref.ArrayLen <= 0 {
+			return "[]"
+		}
+		elem := arrayElemType(*ref.Elem, typeNames)
+		return "[" + strings.TrimSuffix(strings.Repeat(elem+", ", ref.ArrayLen), ", ") + "]"
 	case protocol.KindMap:
 		return "Record<string, " + tsType(*ref.MapValue, typeNames) + ">"
 	case protocol.KindStruct, protocol.KindEnum:
@@ -127,22 +141,61 @@ func generateTypesFile(p *protocol.Protocol, typeNames map[string]string) string
 	return b.String()
 }
 
+func integerWireType(kind protocol.Kind) string {
+	if kind == protocol.KindInt {
+		return `{ kind: "int" }`
+	}
+	if kind == protocol.KindUint {
+		return `{ kind: "uint" }`
+	}
+	signed := kind == protocol.KindInt8 || kind == protocol.KindInt16 || kind == protocol.KindInt32 || kind == protocol.KindInt64
+	bits := 64
+	switch kind {
+	case protocol.KindInt8, protocol.KindUint8:
+		bits = 8
+	case protocol.KindInt16, protocol.KindUint16:
+		bits = 16
+	case protocol.KindInt32, protocol.KindUint32:
+		bits = 32
+	}
+
+	var min, max string
+	if signed {
+		min = fmt.Sprintf("-%d", uint64(1)<<(bits-1))
+		max = fmt.Sprintf("%d", (uint64(1)<<(bits-1))-1)
+	} else {
+		min = "0"
+		if bits == 64 {
+			max = fmt.Sprintf("%d", ^uint64(0))
+		} else {
+			max = fmt.Sprintf("%d", (uint64(1)<<bits)-1)
+		}
+	}
+	if bits == 64 {
+		min += "n"
+		max += "n"
+	}
+	if signed {
+		return fmt.Sprintf(`{ kind: "int", bits: %d, min: %s, max: %s }`, bits, min, max)
+	}
+	return fmt.Sprintf(`{ kind: "uint", bits: %d, min: %s, max: %s }`, bits, min, max)
+}
+
 func wireTypeExpr(ref protocol.TypeRef, typeNames map[string]string) string {
 	switch ref.Kind {
 	case protocol.KindString:
 		return `{ kind: "string" }`
 	case protocol.KindBool:
 		return `{ kind: "bool" }`
-	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32, protocol.KindInt64:
-		return `{ kind: "int" }`
-	case protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:
-		return `{ kind: "uint" }`
+	case protocol.KindInt, protocol.KindInt8, protocol.KindInt16, protocol.KindInt32, protocol.KindInt64,
+		protocol.KindUint, protocol.KindUint8, protocol.KindUint16, protocol.KindUint32, protocol.KindUint64:
+		return integerWireType(ref.Kind)
 	case protocol.KindFloat32:
 		return `{ kind: "float32" }`
 	case protocol.KindFloat64:
 		return `{ kind: "float64" }`
 	case protocol.KindTime:
-		return `{ kind: "time" }`
+		return `{ kind: "time", unit: "nanoseconds" }`
 	case protocol.KindEnum, protocol.KindStruct:
 		return fmt.Sprintf(`{ kind: "named", name: %q }`, typeNames[ref.NamedType])
 	case protocol.KindPointer:
@@ -153,7 +206,10 @@ func wireTypeExpr(ref protocol.TypeRef, typeNames map[string]string) string {
 		}
 		return fmt.Sprintf(`{ kind: "list", elem: %s }`, wireTypeExpr(*ref.Elem, typeNames))
 	case protocol.KindArray:
-		return fmt.Sprintf(`{ kind: "list", elem: %s }`, wireTypeExpr(*ref.Elem, typeNames))
+		if ref.Elem.Kind == protocol.KindUint8 {
+			return fmt.Sprintf(`{ kind: "bytes", length: %d }`, ref.ArrayLen)
+		}
+		return fmt.Sprintf(`{ kind: "array", length: %d, elem: %s }`, ref.ArrayLen, wireTypeExpr(*ref.Elem, typeNames))
 	case protocol.KindMap:
 		return fmt.Sprintf(`{ kind: "map", value: %s }`, wireTypeExpr(*ref.MapValue, typeNames))
 	default:

@@ -4,6 +4,10 @@ import 'dart:typed_data';
 const int maxDepth = 128;
 const int maxContainer = 1 << 24;
 
+final BigInt _int64Min = -(BigInt.one << 63);
+final BigInt _int64Max = (BigInt.one << 63) - BigInt.one;
+final BigInt _uint64Max = (BigInt.one << 64) - BigInt.one;
+
 class BinaryMalformedError extends FormatException {
   BinaryMalformedError([String message = 'malformed binary value'])
       : super(message);
@@ -128,7 +132,7 @@ class BinaryEnvelope {
     if (type < FrameCode.connect || type > FrameCode.connectionError) {
       throw BinaryMalformedError();
     }
-    String text() => utf8.decode(reader.blob(), allowMalformed: false);
+    String text() => _decodeUtf8(reader.blob());
     final result = BinaryEnvelope(
       type: type,
       version: text(),
@@ -188,8 +192,13 @@ abstract final class BinaryCodec {
       return out.blob(utf8.encode(value));
     }
     if (value is DateTime) {
+      // The wire value is microsecondsSinceEpoch * 1000; use BigInt before
+      // multiplying so the signed 64-bit range is checked exactly.
+      final nanos =
+          BigInt.from(value.toUtc().microsecondsSinceEpoch) * BigInt.from(1000);
+      _checkInt64(nanos);
       out.byte(ValueTag.time);
-      return out.svarint(value.toUtc().microsecondsSinceEpoch * 1000);
+      return out.svarint(nanos);
     }
     if (value is Uint8List) {
       out.byte(ValueTag.bytes);
@@ -237,7 +246,7 @@ abstract final class BinaryCodec {
       case ValueTag.trueValue:
         return true;
       case ValueTag.intValue:
-        return reader.svarint();
+        return reader.svarint().toInt();
       case ValueTag.uintValue:
         return UIntValue(reader.uvarint());
       case ValueTag.float32:
@@ -245,14 +254,21 @@ abstract final class BinaryCodec {
       case ValueTag.float64:
         return reader.float64();
       case ValueTag.string:
-        return utf8.decode(reader.blob(), allowMalformed: false);
+        return _decodeUtf8(reader.blob());
       case ValueTag.bytes:
         return Uint8List.fromList(reader.blob());
       case ValueTag.time:
-        return DateTime.fromMicrosecondsSinceEpoch(
-          reader.svarint() ~/ 1000,
-          isUtc: true,
-        );
+        final nanos = reader.svarint();
+        if (nanos.remainder(BigInt.from(1000)) != BigInt.zero) {
+          throw BinaryMalformedError('timestamp has sub-microsecond precision');
+        }
+        final micros = nanos ~/ BigInt.from(1000);
+        try {
+          return DateTime.fromMicrosecondsSinceEpoch(micros.toInt(),
+              isUtc: true);
+        } catch (_) {
+          throw BinaryMalformedError('timestamp is outside the DateTime range');
+        }
       case ValueTag.list:
         final count = reader.count();
         return List<Object?>.generate(
@@ -264,15 +280,23 @@ abstract final class BinaryCodec {
         final result = <String, Object?>{};
         for (var i = 0; i < count; i++) {
           if (reader.byte() != ValueTag.string) throw BinaryMalformedError();
-          final key = utf8.decode(reader.blob(), allowMalformed: false);
+          final key = _decodeUtf8(reader.blob());
+          if (result.containsKey(key)) throw BinaryMalformedError();
           result[key] = _decodeValue(reader, depth + 1);
         }
         return result;
       case ValueTag.struct:
         final count = reader.count();
         final result = <int, Object?>{};
-        for (var i = 0; i < count; i++)
-          result[reader.uvarint().toInt()] = _decodeValue(reader, depth + 1);
+        for (var i = 0; i < count; i++) {
+          final id = reader.uvarint();
+          if (id <= BigInt.zero || id > BigInt.from(0xffffffff)) {
+            throw BinaryMalformedError();
+          }
+          final fieldID = id.toInt();
+          if (result.containsKey(fieldID)) throw BinaryMalformedError();
+          result[fieldID] = _decodeValue(reader, depth + 1);
+        }
         return StructValue(result);
       default:
         throw BinaryMalformedError();
@@ -285,14 +309,25 @@ abstract final class BinaryCodec {
   }
 
   static void _checkUint(BigInt value) {
-    if (value < BigInt.zero || value > BigInt.parse('18446744073709551615')) {
+    if (value < BigInt.zero || value > _uint64Max) {
       throw ArgumentError('unsigned integer out of range');
     }
   }
 
-  static void _checkInt(int value) {
-    if (value < -0x8000000000000000 || value > 0x7fffffffffffffff)
+  static void _checkInt64(BigInt value) {
+    if (value < _int64Min || value > _int64Max) {
       throw ArgumentError('signed integer out of range');
+    }
+  }
+
+  static void _checkInt(int value) => _checkInt64(BigInt.from(value));
+}
+
+String _decodeUtf8(List<int> bytes) {
+  try {
+    return utf8.decode(bytes, allowMalformed: false);
+  } on FormatException {
+    throw BinaryMalformedError('invalid UTF-8');
   }
 }
 
@@ -308,9 +343,15 @@ class _Writer {
     byte(remaining.toInt());
   }
 
-  void svarint(int value) => uvarint(
-        value < 0 ? ((-value * 2) - 1) : value * 2,
-      );
+  void svarint(Object value) {
+    final signed = value is BigInt ? value : BigInt.from(value as int);
+    BinaryCodec._checkInt64(signed);
+    final encoded = signed.isNegative
+        ? (-signed * BigInt.two) - BigInt.one
+        : signed * BigInt.two;
+    uvarint(encoded);
+  }
+
   void blob(List<int> value) {
     uvarint(value.length);
     bytes.addAll(value);
@@ -333,24 +374,31 @@ class _Reader {
   _Reader(this.data);
   int byte() {
     if (position >= data.length) throw BinaryMalformedError();
-    return data[position++];
+    final value = data[position++];
+    if (value < 0 || value > 0xff) throw BinaryMalformedError();
+    return value;
   }
 
   BigInt uvarint() {
     var result = BigInt.zero;
-    for (var shift = 0; shift < 64; shift += 7) {
+    for (var index = 0; index < 10; index++) {
       final value = byte();
-      if (shift == 63 && value > 1) throw BinaryMalformedError();
-      result |= BigInt.from(value & 0x7f) << shift;
-      if (value < 0x80) return result;
+      final payload = value & 0x7f;
+      if (index == 9 && payload > 1) throw BinaryMalformedError();
+      result |= BigInt.from(payload) << (index * 7);
+      if (value < 0x80) {
+        if (index > 0 && result < (BigInt.one << (index * 7))) {
+          throw BinaryMalformedError('non-canonical varint');
+        }
+        return result;
+      }
     }
     throw BinaryMalformedError();
   }
 
-  int svarint() {
+  BigInt svarint() {
     final value = uvarint();
-    final signed = (value >> 1) ^ (-(value & BigInt.one));
-    return signed.toInt();
+    return (value >> 1) ^ (-(value & BigInt.one));
   }
 
   List<int> blob() {

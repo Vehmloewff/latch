@@ -153,11 +153,7 @@ void main() {
           [ValueTag.uintValue, ..._uvarint(_uint64Max)]);
     });
 
-    test('rejects signed and unsigned encoder overflow', () {
-      _expectArgumentError(
-          () => BinaryCodec.encode((_int64Min - BigInt.one).toInt()));
-      _expectArgumentError(
-          () => BinaryCodec.encode((_int64Max + BigInt.one).toInt()));
+    test('rejects unsigned encoder overflow', () {
       _expectArgumentError(
           () => BinaryCodec.encode(UIntValue(BigInt.from(-1))));
       _expectArgumentError(

@@ -158,6 +158,13 @@ export abstract class BaseConnection {
     try {
       env = decodeEnvelope(data);
     } catch {
+      this.failAllPending(new LatchError("malformed_frame", "malformed binary frame"));
+      this.handleClose();
+      try {
+        this.ws.close(1002, "malformed binary frame");
+      } catch {
+        // The socket may already be closed; pending calls are already failed.
+      }
       return;
     }
     const payload = env.payload;
@@ -184,12 +191,23 @@ export abstract class BaseConnection {
         break;
       }
       case "event":
-        this.dispatchEvent({ event: env.event, payload });
+        try {
+          this.dispatchEvent({ event: env.event, payload });
+        } catch {
+          // An invalid event is isolated from the WebSocket callback and RPCs.
+        }
         break;
-      case "connection_error":
-        this.failAllPending(new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error"));
+      case "connection_error": {
+        const error = new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error");
+        this.failAllPending(error);
         this.handleClose();
+        try {
+          this.ws.close(1000, "connection error");
+        } catch {
+          // The socket may already be closed.
+        }
         break;
+      }
       default:
         break;
     }
@@ -241,11 +259,19 @@ export function connectSocket(
 
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
+    let opened = false;
 
     ws.onopen = () => {
-      settled = true;
+      opened = true;
       ws.onopen = null;
-      resolve({ ws, bufferedMessages });
+      // Yield once before resolving. A connection_error can be delivered in
+      // the same turn as open and must reject connect() rather than racing the
+      // caller into constructing a connected client.
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ws, bufferedMessages });
+      }, 0);
     };
 
     ws.onerror = () => {
@@ -262,27 +288,41 @@ export function connectSocket(
 
     ws.onmessage = (ev) => {
       const data = asBytes(ev.data);
-      if (settled) {
-        // The socket is open, but BaseConnection has not installed its handler
-        // yet. Buffer binary frames for replay.
-        bufferedMessages.push(data);
-        return;
-      }
-
       let env: Envelope;
       try {
         env = decodeEnvelope(data);
       } catch {
-        settled = true;
-        ws.close(1002, "malformed binary event before setup");
-        reject(new Error("Latch: malformed binary response during setup"));
+        if (!settled) {
+          settled = true;
+          ws.close(1002, "malformed binary event before setup");
+          reject(new Error("Latch: malformed binary response during setup"));
+        } else {
+          // BaseConnection will report malformed post-open frames after it
+          // installs its handler. Keep this frame for that handler.
+          bufferedMessages.push(data);
+        }
         return;
       }
 
+      // Inspect connection_error before ordinary buffering. In particular,
+      // this covers a frame raced with the open transition.
       if (env.type === "connection_error") {
-        settled = true;
-        ws.close();
-        reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
+        if (!settled) {
+          settled = true;
+          ws.close(1000, "connection rejected");
+          reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
+          return;
+        }
+      }
+
+      if (settled) {
+        // The socket is open, but BaseConnection has not installed its message
+        // handler. Buffer binary frames for replay.
+        bufferedMessages.push(data);
+        return;
+      }
+      if (opened) {
+        bufferedMessages.push(data);
       }
     };
   });
