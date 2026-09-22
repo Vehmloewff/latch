@@ -64,10 +64,32 @@ func TestBinaryUnknownFieldsAreSkipped(t *testing.T) {
 		t.Fatal(out.A)
 	}
 }
-func TestBinaryRejectsMissingAndDuplicateTags(t *testing.T) {
-	if _, e := Encode(struct{ A int }{A: 1}); e == nil {
-		t.Fatal("missing tag accepted")
+func TestBinaryPanicsForMissingFieldNumbers(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("missing tag did not panic")
+		}
+	}()
+	_, _ = Encode(struct{ A int }{A: 1})
+}
+
+func TestBinaryDecodePanicsForMissingFieldNumbers(t *testing.T) {
+	raw, err := Encode(struct {
+		A int `latch:"1"`
+	}{A: 1})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("missing tag did not panic during decode")
+		}
+	}()
+	var out struct{ A int }
+	_ = Decode(raw, &out)
+}
+
+func TestBinaryRejectsDuplicateTags(t *testing.T) {
 	if _, e := Encode(struct {
 		A int `latch:"1"`
 		B int `latch:"1"`

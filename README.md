@@ -183,9 +183,11 @@ needs to manually cast responses or maintain a second copy of the protocol.
 Latch supports named exported structs, strings, booleans, signed and
 unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `map[string]V`, pointers, `time.Time`, and named string enums declared with a
-`jsonschema_enum:"a,b,c"` tag. Struct fields use `latch:"N"` for their stable
-wire ID and `latch:"N,omitempty"` for optional fields. Generated TypeScript and
-Dart field names are derived from the Go field names using lower camel case.
+`jsonschema_enum:"a,b,c"` tag. Every exported field in a protocol struct must
+have a `latch:"N"` tag with a positive, stable wire ID; use
+`latch:"N,omitempty"` for optional fields. Missing field numbers panic during
+wire encoding or decoding. Generated TypeScript and Dart field names are
+derived from the Go field names using lower camel case.
 
 Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 `int64`/`uint64`, non-string map keys, and types implementing

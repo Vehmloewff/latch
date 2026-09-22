@@ -53,8 +53,9 @@ func (e *encoder) u(v uint64) {
 func (e *encoder) n(v int64)     { e.u(uint64(v<<1) ^ uint64(v>>63)) }
 func (e *encoder) blob(v []byte) { e.u(uint64(len(v))); e.b = append(e.b, v...) }
 
-// Encode encodes v using latch numeric tags. The returned buffer is owned by
-// the caller and may be reused after the call.
+// Encode encodes v using latch numeric tags. It panics if an exported struct
+// field has no latch field number. The returned buffer is owned by the caller
+// and may be reused after the call.
 func Encode(v any) ([]byte, error) {
 	var e encoder
 	if err := e.value(reflect.ValueOf(v), 0); err != nil {
@@ -182,6 +183,9 @@ func (e *encoder) value(v reflect.Value, depth int) error {
 		for _, sf := range fields {
 			n, err := fieldNumber(sf)
 			if err != nil {
+				if errors.Is(err, ErrMissingFieldNumber) {
+					panicMissingFieldNumber(sf)
+				}
 				return fmt.Errorf("wire: %s.%s: %w", v.Type(), sf.Name, err)
 			}
 			if _, exists := seen[n]; exists {
@@ -210,6 +214,10 @@ func fieldNumber(sf reflect.StructField) (uint64, error) {
 		return 0, ErrInvalidFieldNumber
 	}
 	return n, nil
+}
+
+func panicMissingFieldNumber(sf reflect.StructField) {
+	panic(fmt.Errorf("wire: %s.%s: %w", sf.Type, sf.Name, ErrMissingFieldNumber))
 }
 
 type decoder struct {
@@ -271,8 +279,9 @@ func (d *decoder) stringBlob() ([]byte, error) {
 }
 
 // Decode decodes exactly one value into dst, which must be a non-nil pointer.
-// Byte slices retain the input backing array; strings are converted to Go
-// strings. No intermediate JSON tree is allocated.
+// It panics if an exported struct field has no latch field number. Byte slices
+// retain the input backing array; strings are converted to Go strings. No
+// intermediate JSON tree is allocated.
 func Decode(data []byte, dst any) error {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
@@ -572,13 +581,10 @@ func (d *decoder) structValue(o reflect.Value, depth int) error {
 		}
 		id, e := fieldNumber(sf)
 		if e != nil {
-			// Decoding legacy Go structs without latch tags is supported using
-			// declaration-order IDs; encoders remain strict and require tags.
 			if errors.Is(e, ErrMissingFieldNumber) {
-				id = uint64(i + 1)
-			} else {
-				return fmt.Errorf("wire: %s.%s: %w", o.Type(), sf.Name, e)
+				panicMissingFieldNumber(sf)
 			}
+			return fmt.Errorf("wire: %s.%s: %w", o.Type(), sf.Name, e)
 		}
 		if _, ok := by[id]; ok {
 			return fmt.Errorf("wire: duplicate field number %d", id)

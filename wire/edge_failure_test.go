@@ -220,28 +220,7 @@ func TestWireRejectsMalformedOverflowAndNoncanonicalVarints(t *testing.T) {
 	}
 }
 
-func TestWireRejectsInvalidTagsButRetainsLegacyDecodeFallback(t *testing.T) {
-	legacy := wireStruct(
-		struct {
-			id    uint64
-			value []byte
-		}{1, wireValue(KindInt, 14)},
-		struct {
-			id    uint64
-			value []byte
-		}{2, wireValue(KindString, 1, 'o')},
-	)
-	var legacyOutput struct {
-		A int
-		B string
-	}
-	if err := Decode(legacy, &legacyOutput); err != nil {
-		t.Fatalf("legacy declaration-order decode failed: %v", err)
-	}
-	if legacyOutput.A != 7 || legacyOutput.B != "o" {
-		t.Fatalf("unexpected legacy output: %+v", legacyOutput)
-	}
-
+func TestWireRejectsInvalidTags(t *testing.T) {
 	invalidTagCases := []struct {
 		name string
 		dst  any
@@ -262,7 +241,7 @@ func TestWireRejectsInvalidTagsButRetainsLegacyDecodeFallback(t *testing.T) {
 				id    uint64
 				value []byte
 			}{1, wireValue(KindInt, 2)}), tc.dst); err == nil {
-				t.Fatal("accepted an invalid latch tag as a legacy field")
+				t.Fatal("accepted an invalid latch tag")
 			}
 		})
 	}
