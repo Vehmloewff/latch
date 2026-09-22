@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import '../../binary_runtime.dart' as generated_runtime;
 import 'package:latch_binary_runtime/latch_binary_runtime.dart';
 import 'package:test/test.dart';
 
@@ -481,23 +480,21 @@ void main() {
     });
   });
 
-  test(
-      'embedded generated runtime reports malformed input with its own error type',
-      () {
+  test('runtime reports malformed input with its own error type', () {
     expect(
-      () => generated_runtime.BinaryCodec.decode([
-        generated_runtime.ValueTag.string,
+      () => BinaryCodec.decode([
+        ValueTag.string,
         1,
         0xff,
       ]),
-      throwsA(isA<generated_runtime.BinaryMalformedError>()),
+      throwsA(isA<BinaryMalformedError>()),
     );
     expect(
-      () => generated_runtime.BinaryCodec.decode([
-        generated_runtime.ValueTag.nullValue,
+      () => BinaryCodec.decode([
+        ValueTag.nullValue,
         0,
       ]),
-      throwsA(isA<generated_runtime.BinaryMalformedError>()),
+      throwsA(isA<BinaryMalformedError>()),
     );
   });
 }

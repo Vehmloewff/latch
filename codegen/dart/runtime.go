@@ -2,11 +2,11 @@ package dart
 
 import _ "embed"
 
-// binaryRuntimeSource is the tested standalone codec copied into the
-// generator package and embedded into every generated client. Generated
-// clients therefore have no dependency on codegen/dart/binary_runtime.
+// binaryRuntimeSource is the tested standalone codec embedded into every
+// generated client. Generated clients therefore have no dependency on
+// codegen/dart/binary_runtime.
 //
-//go:embed binary_runtime.dart
+//go:embed binary_runtime/lib/latch_binary_runtime.dart
 var binaryRuntimeSource string
 
 var runtimeBody = `import 'dart:async';
