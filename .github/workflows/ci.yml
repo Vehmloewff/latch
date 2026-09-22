@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go unit tests
+        run: go test ./...
+
+      - name: Run Go cross-language integration tests
+        run: go run ./cmd/cross-language-test go
+
+  dart:
+    name: Dart tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Set up Go for integration tests
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install binary runtime dependencies
+        working-directory: codegen/dart/binary_runtime
+        run: dart pub get
+
+      - name: Run binary runtime tests
+        working-directory: codegen/dart/binary_runtime
+        run: dart test
+
+      - name: Install chat app dependencies
+        working-directory: examples/chat_app/dart
+        run: dart pub get
+
+      - name: Analyze chat app
+        working-directory: examples/chat_app/dart
+        run: dart analyze lib main.dart test
+
+      - name: Run chat app tests
+        working-directory: examples/chat_app/dart
+        run: dart test
+
+      - name: Run Dart cross-language integration tests
+        run: go run ./cmd/cross-language-test dart
+
+  node:
+    name: Node tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            codegen/typescript/binary_runtime/package-lock.json
+            examples/chat_app/typescript/package-lock.json
+
+      - name: Set up Go for integration tests
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install binary runtime dependencies
+        working-directory: codegen/typescript/binary_runtime
+        run: npm ci
+
+      - name: Run binary runtime tests
+        working-directory: codegen/typescript/binary_runtime
+        run: npm test
+
+      - name: Install chat app dependencies
+        working-directory: examples/chat_app/typescript
+        run: npm ci
+
+      - name: Run chat app type checks
+        working-directory: examples/chat_app/typescript
+        run: npm run check
+
+      - name: Run chat app tests
+        working-directory: examples/chat_app/typescript
+        run: npm test
+
+      - name: Run Node cross-language integration tests
+        run: go run ./cmd/cross-language-test typescript
