@@ -112,7 +112,7 @@ func requireNamedStruct(t reflect.Type) error {
 }
 
 // NewRequest allocates a zero-valued pointer to the handler's request type,
-// suitable for json.Unmarshal.
+// suitable for binary wire decoding.
 func (h *HandlerAdapter) NewRequest() any {
 	return reflect.New(h.RequestType).Interface()
 }
@@ -120,7 +120,7 @@ func (h *HandlerAdapter) NewRequest() any {
 // Call invokes the wrapped handler. stateVal must be a reflect.Value holding
 // the concrete State value matching the type passed to ValidateStateHandler.
 // reqPtr must be a pointer to h.RequestType, typically the
-// value returned by NewRequest after being unmarshaled into.
+// value returned by NewRequest after being decoded from the wire.
 func (h *HandlerAdapter) Call(ctx context.Context, stateVal reflect.Value, reqPtr any) (resp any, err error) {
 	reqVal := reflect.ValueOf(reqPtr).Elem()
 	outs := h.fn.Call([]reflect.Value{reflect.ValueOf(ctx), stateVal, reqVal})

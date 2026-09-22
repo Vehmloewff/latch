@@ -23,15 +23,13 @@ type coreState struct {
 }
 
 type coreEvent struct {
-	Kind string `json:"kind" latch:"1"`
+	Kind string `latch:"1"`
 }
-
 type coreRequest struct {
-	Value int `json:"value" latch:"1"`
+	Value int `latch:"1"`
 }
-
 type coreResponse struct {
-	Value int `json:"value" latch:"1"`
+	Value int `latch:"1"`
 }
 
 func newCoreServer(t *testing.T, opts latch.Options) *latch.Server[coreState] {

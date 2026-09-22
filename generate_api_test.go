@@ -13,15 +13,13 @@ import (
 type generationTestState struct{}
 
 type generationTestEvent struct {
-	Kind string `json:"kind" latch:"1"`
+	Kind string `latch:"1"`
 }
-
 type generationTestRequest struct {
-	Value int `json:"value" latch:"1"`
+	Value int `latch:"1"`
 }
-
 type generationTestResponse struct {
-	Value int `json:"value" latch:"1"`
+	Value int `latch:"1"`
 }
 
 func newGenerationTestServer(t *testing.T) *Server[generationTestState] {

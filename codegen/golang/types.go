@@ -10,11 +10,9 @@ import (
 )
 
 // goType renders the Go type for ref, given the display name chosen for
-// every named type by names.AssignTypeNames. Unlike TypeScript and
-// Dart, Go needs no hand-written (de)serialization: encoding/json already
-// implements exactly the semantics Latch's IR was designed around
-// (struct tags, omitempty, pointers for nullability), so the generated
-// client is just plain Go structs.
+// every named type by names.AssignTypeNames. Go needs no hand-written
+// (de)serialization: generated structs carry Latch wire tags and use the
+// shared binary codec, so the generated client is just plain Go structs.
 func goType(ref protocol.TypeRef, typeNames map[string]string) string {
 	switch ref.Kind {
 	case protocol.KindString:
@@ -47,9 +45,8 @@ func goType(ref protocol.TypeRef, typeNames map[string]string) string {
 		return "*" + goType(*ref.Elem, typeNames)
 	case protocol.KindSlice, protocol.KindArray:
 		// Latch always generates a slice, even for a fixed-size Go
-		// array on the server: JSON itself has no fixed-length array type,
-		// so the client-side representation gains nothing from Go's [N]T
-		// and loses easy zero-value handling.
+		// array on the server: the client-side representation gains nothing
+		// from Go's [N]T and loses easy zero-value handling.
 		return "[]" + goType(*ref.Elem, typeNames)
 	case protocol.KindMap:
 		return "map[string]" + goType(*ref.MapValue, typeNames)
@@ -85,9 +82,9 @@ func sortedNamedTypes(types []*protocol.NamedType, typeNames map[string]string) 
 	return out
 }
 
-// generateTypesFile renders types.go: one Go struct (with encoding/json
-// struct tags matching the wire exactly) per struct named type, one named
-// string type plus a const block per enum named type.
+// generateTypesFile renders types.go: one Go struct (with Latch wire tags)
+// per struct named type, one named string type plus a const block per enum
+// named type.
 func fieldNumber(t *protocol.NamedType, f protocol.Field) int {
 	for i, candidate := range t.Fields {
 		if candidate.GoName == f.GoName {
@@ -129,11 +126,7 @@ func generateTypesFile(pkg string, p *protocol.Protocol, typeNames map[string]st
 		case protocol.KindStruct:
 			fmt.Fprintf(&b, "type %s struct {\n", name)
 			for _, f := range t.Fields {
-				tag := f.JSONName
-				if f.Optional {
-					tag += ",omitempty"
-				}
-				fmt.Fprintf(&b, "\t%s %s `json:%q latch:%q`\n", f.GoName, goType(f.Type, typeNames), tag, fmt.Sprintf("%d%s", fieldNumber(t, f), func() string {
+				fmt.Fprintf(&b, "\t%s %s `latch:%q`\n", f.GoName, goType(f.Type, typeNames), fmt.Sprintf("%d%s", fieldNumber(t, f), func() string {
 					if f.Optional {
 						return ",omitempty"
 					}

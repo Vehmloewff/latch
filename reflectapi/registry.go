@@ -245,7 +245,6 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 	visiting = cloneVisiting(visiting)
 	visiting[t] = true
 
-	seen := map[string]string{} // json name -> go field name
 	var fields []protocol.Field
 
 	for i := 0; i < t.NumField(); i++ {
@@ -261,13 +260,7 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 			continue
 		}
 
-		jsonName, optional, skip, err := parseJSONTag(sf)
-		if err != nil {
-			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
-		}
-		if skip {
-			continue
-		}
+		optional := parseLatchOptional(sf)
 
 		if err := declareFieldEnum(r, sf); err != nil {
 			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
@@ -284,17 +277,8 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
 		}
 
-		if prev, dup := seen[jsonName]; dup {
-			return protocol.TypeRef{}, fmt.Errorf(
-				"struct %s: fields %s and %s both encode to JSON property %q",
-				t.String(), prev, sf.Name, jsonName,
-			)
-		}
-		seen[jsonName] = sf.Name
-
 		fields = append(fields, protocol.Field{
 			GoName:   sf.Name,
-			JSONName: jsonName,
 			Type:     ref,
 			Optional: optional,
 			Nullable: nullable,
@@ -317,28 +301,17 @@ func typeID(t reflect.Type) string {
 	return t.PkgPath() + "." + t.Name()
 }
 
-// parseJSONTag mirrors encoding/json's tag semantics: `json:"-"` skips the
-// field, `json:"name,omitempty"` renames it and marks it optional, and a
-// missing tag falls back to the Go field name.
-func parseJSONTag(sf reflect.StructField) (jsonName string, optional bool, skip bool, err error) {
-	tag, ok := sf.Tag.Lookup("json")
+func parseLatchOptional(sf reflect.StructField) bool {
+	tag, ok := sf.Tag.Lookup("latch")
 	if !ok || tag == "" {
-		return sf.Name, false, false, nil
+		return false
 	}
-	parts := strings.Split(tag, ",")
-	name := parts[0]
-	if name == "-" && len(parts) == 1 {
-		return "", false, true, nil
-	}
-	if name == "" {
-		name = sf.Name
-	}
-	for _, opt := range parts[1:] {
-		if opt == "omitempty" {
-			optional = true
+	for _, option := range strings.Split(tag, ",")[1:] {
+		if option == "omitempty" {
+			return true
 		}
 	}
-	return name, optional, false, nil
+	return false
 }
 
 func declareFieldEnum(r *Registry, sf reflect.StructField) error {

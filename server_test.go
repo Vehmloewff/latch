@@ -14,14 +14,14 @@ import (
 
 type serverState struct{}
 type serverRequest struct {
-	A int `json:"a" latch:"1"`
-	B int `json:"b" latch:"2"`
+	A int `latch:"1"`
+	B int `latch:"2"`
 }
 type serverResponse struct {
-	Result int `json:"result" latch:"1"`
+	Result int `latch:"1"`
 }
 type serverEvent struct {
-	Kind string `json:"kind" latch:"1"`
+	Kind string `latch:"1"`
 }
 
 func newServer(t *testing.T) *latch.Server[serverState] {

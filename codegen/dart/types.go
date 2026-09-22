@@ -53,10 +53,9 @@ func dartType(ref protocol.TypeRef, typeNames map[string]string) string {
 }
 
 // dartFieldName is the idiomatic lowerCamelCase Dart field name for f,
-// derived from its wire JSON name (which may already be camelCase, or may
-// be snake_case, dotted, etc).
+// derived from the Go field name.
 func dartFieldName(f protocol.Field) string {
-	return names.CamelCase(f.JSONName)
+	return names.CamelCase(f.GoName)
 }
 
 // dartFieldType is the declared Dart field type for f: nullable whenever the

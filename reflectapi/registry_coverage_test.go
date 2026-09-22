@@ -21,41 +21,39 @@ type registryCoverageString string
 type registryCoverageEnum string
 
 type registryCoverageEnumRepeat struct {
-	Value registryCoverageEnum  `json:"value" jsonschema_enum:"draft, sent, paid"`
-	Alias *registryCoverageEnum `json:"alias" jsonschema_enum:"draft, sent, paid"`
+	Value registryCoverageEnum  `latch:"1" jsonschema_enum:"draft, sent, paid"`
+	Alias *registryCoverageEnum `latch:"2" jsonschema_enum:"draft, sent, paid"`
 }
 
 type registryCoverageEnumConflict struct {
-	First  registryCoverageEnum `json:"first" jsonschema_enum:"draft,sent"`
-	Second registryCoverageEnum `json:"second" jsonschema_enum:"draft,paid"`
+	First  registryCoverageEnum `latch:"1" jsonschema_enum:"draft,sent"`
+	Second registryCoverageEnum `latch:"2" jsonschema_enum:"draft,paid"`
 }
 
 type registryCoverageInvalidPlain struct {
-	Value string `jsonschema_enum:"one,two"`
+	Value string `latch:"1" jsonschema_enum:"one,two"`
 }
 
 type registryCoverageInvalidNumber struct {
-	Value int `jsonschema_enum:"one,two"`
+	Value int `latch:"1" jsonschema_enum:"one,two"`
 }
 
 type registryCoverageInvalidPointer struct {
-	Value *int `jsonschema_enum:"one,two"`
+	Value *int `latch:"1" jsonschema_enum:"one,two"`
 }
 
 type registryCoverageTagged struct {
-	DefaultName string  `json:""`
-	Renamed     string  `json:"wireName,omitempty"`
-	EmptyName   string  `json:",omitempty"`
-	Nullable    *string `json:"nullable"`
-	Skipped     string  `json:"-"`
+	Required string  `latch:"1"`
+	Optional string  `latch:"2,omitempty"`
+	Nullable *string `latch:"3"`
 }
 
 type registryCoverageOrderZulu struct {
-	Value string `json:"value"`
+	Value string `latch:"1"`
 }
 
 type registryCoverageOrderAlpha struct {
-	Value string `json:"value"`
+	Value string `latch:"1"`
 }
 
 func TestRegistryRejectsCustomJSONMarshalers(t *testing.T) {
@@ -124,10 +122,10 @@ func TestRegistryEnumRepeatConflictAndPointerSemantics(t *testing.T) {
 		}
 		byName := map[string]protocol.Field{}
 		for _, field := range structType.Fields {
-			byName[field.JSONName] = field
+			byName[field.GoName] = field
 		}
-		value := byName["value"]
-		alias := byName["alias"]
+		value := byName["Value"]
+		alias := byName["Alias"]
 		if value.Type.Kind != protocol.KindEnum || value.Type.NamedType != enum.ID {
 			t.Fatalf("value field = %#v, want enum reference %q", value.Type, enum.ID)
 		}
@@ -160,7 +158,7 @@ func TestRegistryRejectsInvalidEnumTags(t *testing.T) {
 	}
 }
 
-func TestRegistryCarriesJSONTags(t *testing.T) {
+func TestRegistryCarriesLatchTags(t *testing.T) {
 	r := NewRegistry()
 	ref, err := r.Resolve(reflect.TypeOf(registryCoverageTagged{}))
 	if err != nil {
@@ -181,27 +179,20 @@ func TestRegistryCarriesJSONTags(t *testing.T) {
 	}
 	fields := make(map[string]protocol.Field, len(named.Fields))
 	for _, field := range named.Fields {
-		fields[field.JSONName] = field
+		fields[field.GoName] = field
 	}
-	if len(fields) != 4 {
-		t.Fatalf("fields = %#v, want skipped field omitted", fields)
+	if len(fields) != 3 {
+		t.Fatalf("fields = %#v, want all exported fields", fields)
 	}
-	if _, ok := fields["Skipped"]; ok {
-		t.Fatal("json:\"-\" field was registered")
+	if fields["Required"].Optional {
+		t.Fatal("required latch field should remain required")
 	}
-	if fields["DefaultName"].Optional {
-		t.Fatal("json:\"\" field should remain required")
+	if !fields["Optional"].Optional {
+		t.Fatal("latch omitempty field should be optional")
 	}
-	if !fields["wireName"].Optional {
-		t.Fatal("renamed omitempty field should be optional")
+	if !fields["Nullable"].Nullable || fields["Nullable"].Type.Kind != protocol.KindPointer {
+		t.Fatalf("nullable field = %#v, want nullable pointer", fields["Nullable"])
 	}
-	if !fields["EmptyName"].Optional {
-		t.Fatal("empty JSON name with omitempty should be optional")
-	}
-	if !fields["nullable"].Nullable || fields["nullable"].Type.Kind != protocol.KindPointer {
-		t.Fatalf("nullable field = %#v, want nullable pointer", fields["nullable"])
-	}
-
 }
 
 func TestRegistryTypesAreDeterministicallySortedByID(t *testing.T) {

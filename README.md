@@ -37,16 +37,16 @@ type State struct {
 }
 
 type AddRequest struct {
-    A int `json:"a"`
-    B int `json:"b"`
+    A int `latch:"1"`
+    B int `latch:"2"`
 }
 
 type AddResponse struct {
-    Result int `json:"result"`
+    Result int `latch:"1"`
 }
 
 type Event struct {
-    Kind string `json:"kind"`
+    Kind string `latch:"1"`
 }
 
 func buildAPI() *latch.Server[State] {
@@ -183,7 +183,9 @@ needs to manually cast responses or maintain a second copy of the protocol.
 Latch supports named exported structs, strings, booleans, signed and
 unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `map[string]V`, pointers, `time.Time`, and named string enums declared with a
-`jsonschema_enum:"a,b,c"` tag.
+`jsonschema_enum:"a,b,c"` tag. Struct fields use `latch:"N"` for their stable
+wire ID and `latch:"N,omitempty"` for optional fields. Generated TypeScript and
+Dart field names are derived from the Go field names using lower camel case.
 
 Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 `int64`/`uint64`, non-string map keys, and types implementing

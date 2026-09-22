@@ -13,14 +13,14 @@ import (
 
 type testState struct{}
 type testRequest struct {
-	A int `json:"a" latch:"1"`
-	B int `json:"b" latch:"2"`
+	A int `latch:"1"`
+	B int `latch:"2"`
 }
 type testResponse struct {
-	Result int `json:"result" latch:"1"`
+	Result int `latch:"1"`
 }
 type testEvent struct {
-	Value int `json:"value" latch:"1"`
+	Value int `latch:"1"`
 }
 
 func newTestServer(t *testing.T) string {

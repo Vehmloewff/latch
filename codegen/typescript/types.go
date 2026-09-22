@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vehmloewff/latch/names"
 	"github.com/vehmloewff/latch/protocol"
 )
 
@@ -106,7 +107,7 @@ func generateTypesFile(p *protocol.Protocol, typeNames map[string]string) string
 				if f.Optional {
 					opt = "?"
 				}
-				b.WriteString(fmt.Sprintf("  %s%s: %s;\n", f.JSONName, opt, tsType(f.Type, typeNames)))
+				b.WriteString(fmt.Sprintf("  %s%s: %s;\n", names.CamelCase(f.GoName), opt, tsType(f.Type, typeNames)))
 			}
 			b.WriteString("}\n\n")
 
@@ -128,7 +129,7 @@ func generateTypesFile(p *protocol.Protocol, typeNames map[string]string) string
 			if i > 0 {
 				b.WriteString(",")
 			}
-			b.WriteString(fmt.Sprintf("%d: { name: %q, type: %s", i+1, f.JSONName, wireTypeExpr(f.Type, typeNames)))
+			b.WriteString(fmt.Sprintf("%d: { name: %q, type: %s", i+1, names.CamelCase(f.GoName), wireTypeExpr(f.Type, typeNames)))
 			if f.Optional {
 				b.WriteString(", optional: true")
 			}

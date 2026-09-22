@@ -104,8 +104,8 @@ func TestDartEncodeDecodeAndFieldBranches(t *testing.T) {
 		})
 	}
 
-	optionalValue := protocol.Field{GoName: "Optional", JSONName: "optional_value", Type: stringRef, Optional: true}
-	optionalPointer := protocol.Field{GoName: "OptionalPointer", JSONName: "optional_pointer", Type: protocol.TypeRef{Kind: protocol.KindPointer, Elem: &stringRef}, Optional: true}
+	optionalValue := protocol.Field{GoName: "OptionalValue", Type: stringRef, Optional: true}
+	optionalPointer := protocol.Field{GoName: "OptionalPointer", Type: protocol.TypeRef{Kind: protocol.KindPointer, Elem: &stringRef}, Optional: true}
 	named := &protocol.NamedType{ID: "example.Record", GoName: "Record", Kind: protocol.KindStruct, Fields: []protocol.Field{optionalValue, optionalPointer}}
 	if got := fieldEncodeStatement(named, optionalValue, typeNames); !strings.Contains(got, "if (optionalValue != null)") {
 		t.Fatalf("optional field encode = %q", got)
@@ -113,7 +113,7 @@ func TestDartEncodeDecodeAndFieldBranches(t *testing.T) {
 	if got := fieldDecodeExpr(optionalValue, 1, typeNames); !strings.Contains(got, "containsKey") {
 		t.Fatalf("optional field decode = %q", got)
 	}
-	if got := dartFieldName(protocol.Field{JSONName: "some_value"}); got != "someValue" {
+	if got := dartFieldName(protocol.Field{GoName: "SomeValue"}); got != "someValue" {
 		t.Fatalf("dartFieldName = %q", got)
 	}
 }

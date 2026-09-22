@@ -12,62 +12,62 @@ import (
 
 // JoinRoomRequest identifies the user and room for a connection.
 type JoinRoomRequest struct {
-	Room   string `json:"room" latch:"1"`
-	UserID string `json:"userId" latch:"2"`
+	Room   string `latch:"1"`
+	UserID string `latch:"2"`
 }
 
 type JoinRoomResponse struct {
-	Room      string   `json:"room" latch:"1"`
-	MemberIDs []string `json:"memberIds" latch:"2"`
+	Room      string   `latch:"1"`
+	MemberIDs []string `latch:"2"`
 }
 
 type ListRoomsRequest struct{}
 
 type ListRoomsResponse struct {
-	Rooms []string `json:"rooms" latch:"1"`
+	Rooms []string `latch:"1"`
 }
 
 type HistoryRequest struct {
-	Room string `json:"room" latch:"1"`
+	Room string `latch:"1"`
 }
 
 type ChatMessage struct {
-	ID       int32     `json:"id" latch:"1"`
-	Room     string    `json:"room" latch:"2"`
-	SenderID string    `json:"senderId" latch:"3"`
-	Text     string    `json:"text" latch:"4"`
-	SentAt   time.Time `json:"sentAt" latch:"5"`
+	ID       int32     `latch:"1"`
+	Room     string    `latch:"2"`
+	SenderID string    `latch:"3"`
+	Text     string    `latch:"4"`
+	SentAt   time.Time `latch:"5"`
 }
 
 type HistoryResponse struct {
-	Messages []ChatMessage `json:"messages" latch:"1"`
+	Messages []ChatMessage `latch:"1"`
 }
 
 type SendMessageRequest struct {
-	Room     string `json:"room" latch:"1"`
-	SenderID string `json:"senderId" latch:"2"`
-	Text     string `json:"text" latch:"3"`
+	Room     string `latch:"1"`
+	SenderID string `latch:"2"`
+	Text     string `latch:"3"`
 }
 
 type SendMessageResponse struct {
-	Message ChatMessage `json:"message" latch:"1"`
+	Message ChatMessage `latch:"1"`
 }
 
 type PresenceChanged struct {
-	Room   string `json:"room" latch:"1"`
-	UserID string `json:"userId" latch:"2"`
-	Online bool   `json:"online" latch:"3"`
+	Room   string `latch:"1"`
+	UserID string `latch:"2"`
+	Online bool   `latch:"3"`
 }
 
 type MessageReceived struct {
-	Message ChatMessage `json:"message" latch:"1"`
+	Message ChatMessage `latch:"1"`
 }
 
 // Event is the server-to-client event union. Kind selects the populated field.
 type Event struct {
-	Kind     string           `json:"kind" latch:"1"`
-	Message  *MessageReceived `json:"message,omitempty" latch:"2,omitempty"`
-	Presence *PresenceChanged `json:"presence,omitempty" latch:"3,omitempty"`
+	Kind     string           `latch:"1"`
+	Message  *MessageReceived `latch:"2,omitempty"`
+	Presence *PresenceChanged `latch:"3,omitempty"`
 }
 
 type State struct {

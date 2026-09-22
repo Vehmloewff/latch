@@ -70,9 +70,8 @@ type TypeRef struct {
 // Field is one field of a NamedType of kind KindStruct.
 type Field struct {
 	GoName   string
-	JSONName string
 	Type     TypeRef
-	Optional bool // json tag carries `,omitempty`
+	Optional bool // latch tag carries `,omitempty`
 	Nullable bool // Go field type is a pointer
 }
 

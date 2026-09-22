@@ -28,8 +28,8 @@ func dartPrecisionProtocol(fields ...protocol.Field) *protocol.Protocol {
 	}
 }
 
-func dartPrecisionField(goName, jsonName string, typ protocol.TypeRef) protocol.Field {
-	return protocol.Field{GoName: goName, JSONName: jsonName, Type: typ}
+func dartPrecisionField(goName string, typ protocol.TypeRef) protocol.Field {
+	return protocol.Field{GoName: goName, Type: typ}
 }
 
 func dartPrecisionSlice(kind protocol.Kind) protocol.TypeRef {
@@ -61,17 +61,24 @@ func assertGeneratedDartContains(t *testing.T, generated string, snippets ...str
 }
 
 func TestGenerateDartPrecisionCases(t *testing.T) {
+	t.Run("Go field names become camel case", func(t *testing.T) {
+		generated := generatePrecisionDart(t, dartPrecisionProtocol(
+			dartPrecisionField("UserID", protocol.TypeRef{Kind: protocol.KindString}),
+		))
+		assertGeneratedDartContains(t, generated, `final String userId;`)
+	})
+
 	t.Run("bytes public type", func(t *testing.T) {
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("Bytes", "bytes", dartPrecisionSlice(protocol.KindUint8)),
+			dartPrecisionField("Bytes", dartPrecisionSlice(protocol.KindUint8)),
 		))
 		assertGeneratedDartContains(t, generated, `final Uint8List bytes;`)
 	})
 
 	t.Run("fixed array element types", func(t *testing.T) {
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("FixedBytes", "fixedBytes", dartPrecisionArray(protocol.KindUint8, 4)),
-			dartPrecisionField("FixedInts", "fixedInts", dartPrecisionArray(protocol.KindInt, 3)),
+			dartPrecisionField("FixedBytes", dartPrecisionArray(protocol.KindUint8, 4)),
+			dartPrecisionField("FixedInts", dartPrecisionArray(protocol.KindInt, 3)),
 		))
 		assertGeneratedDartContains(t, generated,
 			`final Uint8List fixedBytes;`,
@@ -81,8 +88,8 @@ func TestGenerateDartPrecisionCases(t *testing.T) {
 
 	t.Run("integer public types", func(t *testing.T) {
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("Int8Value", "int8Value", protocol.TypeRef{Kind: protocol.KindInt8}),
-			dartPrecisionField("Uint8Value", "uint8Value", protocol.TypeRef{Kind: protocol.KindUint8}),
+			dartPrecisionField("Int8Value", protocol.TypeRef{Kind: protocol.KindInt8}),
+			dartPrecisionField("Uint8Value", protocol.TypeRef{Kind: protocol.KindUint8}),
 		))
 		assertGeneratedDartContains(t, generated,
 			`final int int8Value;`,
@@ -92,14 +99,14 @@ func TestGenerateDartPrecisionCases(t *testing.T) {
 
 	t.Run("unsigned 64-bit public type is exact", func(t *testing.T) {
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("Uint64Value", "uint64Value", protocol.TypeRef{Kind: protocol.KindUint64}),
+			dartPrecisionField("Uint64Value", protocol.TypeRef{Kind: protocol.KindUint64}),
 		))
 		assertGeneratedDartContains(t, generated, `final BigInt uint64Value;`)
 	})
 
 	t.Run("timestamp representation", func(t *testing.T) {
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("Timestamp", "timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
+			dartPrecisionField("Timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
 		))
 		assertGeneratedDartContains(t, generated, `final DateTime timestamp;`)
 	})
@@ -111,7 +118,7 @@ func TestGenerateDartPrecisionCases(t *testing.T) {
 			}
 		}()
 		generated := generatePrecisionDart(t, dartPrecisionProtocol(
-			dartPrecisionField("Int64Value", "int64Value", protocol.TypeRef{Kind: protocol.KindInt64}),
+			dartPrecisionField("Int64Value", protocol.TypeRef{Kind: protocol.KindInt64}),
 		))
 		assertGeneratedDartContains(t, generated, `final int int64Value;`)
 	})
@@ -119,9 +126,9 @@ func TestGenerateDartPrecisionCases(t *testing.T) {
 
 func TestGenerateDartEmbedsTheStandaloneBinaryRuntime(t *testing.T) {
 	generated := generatePrecisionDart(t, dartPrecisionProtocol(
-		dartPrecisionField("Bytes", "bytes", dartPrecisionSlice(protocol.KindUint8)),
-		dartPrecisionField("FixedBytes", "fixedBytes", dartPrecisionArray(protocol.KindUint8, 4)),
-		dartPrecisionField("Timestamp", "timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
+		dartPrecisionField("Bytes", dartPrecisionSlice(protocol.KindUint8)),
+		dartPrecisionField("FixedBytes", dartPrecisionArray(protocol.KindUint8, 4)),
+		dartPrecisionField("Timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
 	))
 
 	if !strings.Contains(generated, stripImports(binaryRuntimeSource)) {

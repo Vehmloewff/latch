@@ -28,8 +28,8 @@ func precisionProtocol(fields ...protocol.Field) *protocol.Protocol {
 	}
 }
 
-func precisionField(goName, jsonName string, typ protocol.TypeRef) protocol.Field {
-	return protocol.Field{GoName: goName, JSONName: jsonName, Type: typ}
+func precisionField(goName string, typ protocol.TypeRef) protocol.Field {
+	return protocol.Field{GoName: goName, Type: typ}
 }
 
 func precisionSlice(kind protocol.Kind) protocol.TypeRef {
@@ -61,9 +61,16 @@ func assertGeneratedTypeScriptContains(t *testing.T, generated string, snippets 
 }
 
 func TestGenerateTypeScriptPrecisionCases(t *testing.T) {
+	t.Run("Go field names become camel case", func(t *testing.T) {
+		generated := generatePrecisionTypeScript(t, precisionProtocol(
+			precisionField("UserID", protocol.TypeRef{Kind: protocol.KindString}),
+		))
+		assertGeneratedTypeScriptContains(t, generated, `userId: string;`)
+	})
+
 	t.Run("bytes public type", func(t *testing.T) {
 		generated := generatePrecisionTypeScript(t, precisionProtocol(
-			precisionField("Bytes", "bytes", precisionSlice(protocol.KindUint8)),
+			precisionField("Bytes", precisionSlice(protocol.KindUint8)),
 		))
 		assertGeneratedTypeScriptContains(t, generated,
 			`bytes: Uint8Array;`,
@@ -73,8 +80,8 @@ func TestGenerateTypeScriptPrecisionCases(t *testing.T) {
 
 	t.Run("fixed array length", func(t *testing.T) {
 		generated := generatePrecisionTypeScript(t, precisionProtocol(
-			precisionField("FixedBytes", "fixedBytes", precisionArray(protocol.KindUint8, 4)),
-			precisionField("FixedInts", "fixedInts", precisionArray(protocol.KindInt, 3)),
+			precisionField("FixedBytes", precisionArray(protocol.KindUint8, 4)),
+			precisionField("FixedInts", precisionArray(protocol.KindInt, 3)),
 		))
 		assertGeneratedTypeScriptContains(t, generated,
 			`fixedBytes: Uint8Array;`,
@@ -86,8 +93,8 @@ func TestGenerateTypeScriptPrecisionCases(t *testing.T) {
 
 	t.Run("integer width metadata", func(t *testing.T) {
 		generated := generatePrecisionTypeScript(t, precisionProtocol(
-			precisionField("Int8Value", "int8Value", protocol.TypeRef{Kind: protocol.KindInt8}),
-			precisionField("Uint8Value", "uint8Value", protocol.TypeRef{Kind: protocol.KindUint8}),
+			precisionField("Int8Value", protocol.TypeRef{Kind: protocol.KindInt8}),
+			precisionField("Uint8Value", protocol.TypeRef{Kind: protocol.KindUint8}),
 		))
 		assertGeneratedTypeScriptContains(t, generated,
 			`int8Value: number;`,
@@ -99,7 +106,7 @@ func TestGenerateTypeScriptPrecisionCases(t *testing.T) {
 
 	t.Run("timestamp representation", func(t *testing.T) {
 		generated := generatePrecisionTypeScript(t, precisionProtocol(
-			precisionField("Timestamp", "timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
+			precisionField("Timestamp", protocol.TypeRef{Kind: protocol.KindTime}),
 		))
 		assertGeneratedTypeScriptContains(t, generated,
 			`timestamp: bigint;`,
@@ -114,8 +121,8 @@ func TestGenerateTypeScriptPrecisionCases(t *testing.T) {
 			}
 		}()
 		generated := generatePrecisionTypeScript(t, precisionProtocol(
-			precisionField("Int64Value", "int64Value", protocol.TypeRef{Kind: protocol.KindInt64}),
-			precisionField("Uint64Value", "uint64Value", protocol.TypeRef{Kind: protocol.KindUint64}),
+			precisionField("Int64Value", protocol.TypeRef{Kind: protocol.KindInt64}),
+			precisionField("Uint64Value", protocol.TypeRef{Kind: protocol.KindUint64}),
 		))
 		assertGeneratedTypeScriptContains(t, generated,
 			`int64Value: bigint;`,

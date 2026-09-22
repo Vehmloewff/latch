@@ -177,9 +177,9 @@ func TestGeneratedGoCompilesAndExecutes(t *testing.T) {
 		Methods:   []protocol.Method{{Name: "math_add", RequestType: ref(requestID), ResponseType: ref(responseID)}},
 		EventType: ref(eventID),
 		Types: []*protocol.NamedType{
-			{ID: requestID, GoPkgPath: "example/generated", GoName: "Request", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Value", JSONName: "value", Type: protocol.TypeRef{Kind: protocol.KindInt}}}},
-			{ID: responseID, GoPkgPath: "example/generated", GoName: "Response", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Value", JSONName: "value", Type: protocol.TypeRef{Kind: protocol.KindInt}}}},
-			{ID: eventID, GoPkgPath: "example/generated", GoName: "Event", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Message", JSONName: "message", Type: protocol.TypeRef{Kind: protocol.KindString}}}},
+			{ID: requestID, GoPkgPath: "example/generated", GoName: "Request", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Value", Type: protocol.TypeRef{Kind: protocol.KindInt}}}},
+			{ID: responseID, GoPkgPath: "example/generated", GoName: "Response", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Value", Type: protocol.TypeRef{Kind: protocol.KindInt}}}},
+			{ID: eventID, GoPkgPath: "example/generated", GoName: "Event", Kind: protocol.KindStruct, Fields: []protocol.Field{{GoName: "Message", Type: protocol.TypeRef{Kind: protocol.KindString}}}},
 		},
 	}
 	files, err := Generate(p, Options{Package: "generated", ClientName: "Demo"})
@@ -225,7 +225,7 @@ func TestGeneratedClientRuns(t *testing.T) {
     if err != nil {
         t.Fatal(err)
     }
-    if string(raw) != ` + "`{\"value\":7}`" + ` {
+    if string(raw) != ` + "`{\"Value\":7}`" + ` {
         t.Fatalf("request JSON = %s", raw)
     }
 }

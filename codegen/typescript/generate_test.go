@@ -10,38 +10,38 @@ import (
 )
 
 type ConnectParams struct {
-	Token string `json:"token"`
+	Token string `latch:"1"`
 }
 
 type InvoiceStatus string
 
 type Invoice struct {
-	ID       string            `json:"id"`
-	Status   InvoiceStatus     `json:"status" jsonschema_enum:"draft,sent,paid"`
-	Amount   int               `json:"amount"`
-	Note     *string           `json:"note,omitempty"`
-	Tags     []string          `json:"tags"`
-	Metadata map[string]string `json:"metadata"`
+	ID       string            `latch:"1"`
+	Status   InvoiceStatus     `latch:"2" jsonschema_enum:"draft,sent,paid"`
+	Amount   int               `latch:"3"`
+	Note     *string           `latch:"4,omitempty"`
+	Tags     []string          `latch:"5"`
+	Metadata map[string]string `latch:"6"`
 }
 
 type GetInvoiceRequest struct {
-	ID string `json:"id"`
+	ID string `latch:"1"`
 }
 
 type GetInvoiceResponse struct {
-	Invoice Invoice `json:"invoice"`
+	Invoice Invoice `latch:"1"`
 }
 
 type UserGetRequest struct {
-	ID string `json:"id"`
+	ID string `latch:"1"`
 }
 
 type UserGetResponse struct {
-	Name string `json:"name"`
+	Name string `latch:"1"`
 }
 
 type InvoiceUpdated struct {
-	Invoice Invoice `json:"invoice"`
+	Invoice Invoice `latch:"1"`
 }
 
 func buildFixtureProtocol(t *testing.T) *protocol.Protocol {

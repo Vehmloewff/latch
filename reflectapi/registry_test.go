@@ -9,25 +9,24 @@ import (
 )
 
 type Address struct {
-	City string `json:"city"`
-	Zip  string `json:"zip,omitempty"`
+	City string `latch:"1"`
+	Zip  string `latch:"2,omitempty"`
 }
 
 type Status string
 
 type Widget struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name,omitempty"`
-	Nickname  *string           `json:"nickname"`
-	Alias     *string           `json:"alias,omitempty"`
-	CreatedAt time.Time         `json:"createdAt"`
-	Tags      []string          `json:"tags"`
-	Home      Address           `json:"home"`
-	Backup    *Address          `json:"backup,omitempty"`
-	Grid      [3]int            `json:"grid"`
-	Meta      map[string]string `json:"meta"`
-	Status    Status            `json:"status" jsonschema_enum:"pending,active,disabled"`
-	Ignored   string            `json:"-"`
+	ID        string            `latch:"1"`
+	Name      string            `latch:"2,omitempty"`
+	Nickname  *string           `latch:"3"`
+	Alias     *string           `latch:"4,omitempty"`
+	CreatedAt time.Time         `latch:"5"`
+	Tags      []string          `latch:"6"`
+	Home      Address           `latch:"7"`
+	Backup    *Address          `latch:"8,omitempty"`
+	Grid      [3]int            `latch:"9"`
+	Meta      map[string]string `latch:"10"`
+	Status    Status            `latch:"11" jsonschema_enum:"pending,active,disabled"`
 	unexpo    string            //nolint:unused
 }
 
@@ -62,29 +61,25 @@ func TestResolveStructShape(t *testing.T) {
 		t.Fatalf("expected Status enum with 3 values, got %+v", status)
 	}
 
-	fieldsByJSON := map[string]protocol.Field{}
+	fieldsByName := map[string]protocol.Field{}
 	for _, f := range widget.Fields {
-		fieldsByJSON[f.JSONName] = f
-	}
-
-	if _, ok := fieldsByJSON["-"]; ok {
-		t.Fatalf("json:\"-\" field should have been skipped")
+		fieldsByName[f.GoName] = f
 	}
 	if len(widget.Fields) != 11 {
 		t.Fatalf("expected 11 fields, got %d: %+v", len(widget.Fields), widget.Fields)
 	}
 
-	id := fieldsByJSON["id"]
+	id := fieldsByName["ID"]
 	if id.Optional || id.Nullable {
 		t.Fatalf("id should be required+non-null, got %+v", id)
 	}
 
-	name := fieldsByJSON["name"]
+	name := fieldsByName["Name"]
 	if !name.Optional || name.Nullable {
 		t.Fatalf("name should be optional+non-null, got %+v", name)
 	}
 
-	nickname := fieldsByJSON["nickname"]
+	nickname := fieldsByName["Nickname"]
 	if nickname.Optional || !nickname.Nullable {
 		t.Fatalf("nickname should be required+nullable, got %+v", nickname)
 	}
@@ -92,37 +87,37 @@ func TestResolveStructShape(t *testing.T) {
 		t.Fatalf("nickname should be pointer-to-string, got %+v", nickname.Type)
 	}
 
-	alias := fieldsByJSON["alias"]
+	alias := fieldsByName["Alias"]
 	if !alias.Optional || !alias.Nullable {
 		t.Fatalf("alias should be optional+nullable, got %+v", alias)
 	}
 
-	createdAt := fieldsByJSON["createdAt"]
+	createdAt := fieldsByName["CreatedAt"]
 	if createdAt.Type.Kind != protocol.KindTime {
 		t.Fatalf("createdAt should be KindTime, got %s", createdAt.Type.Kind)
 	}
 
-	tags := fieldsByJSON["tags"]
+	tags := fieldsByName["Tags"]
 	if tags.Type.Kind != protocol.KindSlice || tags.Type.Elem.Kind != protocol.KindString {
 		t.Fatalf("tags should be []string, got %+v", tags.Type)
 	}
 
-	home := fieldsByJSON["home"]
+	home := fieldsByName["Home"]
 	if home.Type.Kind != protocol.KindStruct || home.Type.NamedType != address.ID {
 		t.Fatalf("home should reference Address struct, got %+v", home.Type)
 	}
 
-	grid := fieldsByJSON["grid"]
+	grid := fieldsByName["Grid"]
 	if grid.Type.Kind != protocol.KindArray || grid.Type.ArrayLen != 3 {
 		t.Fatalf("grid should be [3]int, got %+v", grid.Type)
 	}
 
-	meta := fieldsByJSON["meta"]
+	meta := fieldsByName["Meta"]
 	if meta.Type.Kind != protocol.KindMap || meta.Type.MapValue.Kind != protocol.KindString {
 		t.Fatalf("meta should be map[string]string, got %+v", meta.Type)
 	}
 
-	statusField := fieldsByJSON["status"]
+	statusField := fieldsByName["Status"]
 	if statusField.Type.Kind != protocol.KindEnum {
 		t.Fatalf("status field should be enum kind, got %+v", statusField.Type)
 	}
@@ -131,7 +126,7 @@ func TestResolveStructShape(t *testing.T) {
 func TestRejectAnonymousStruct(t *testing.T) {
 	r := NewRegistry()
 	type inline = struct {
-		X string `json:"x"`
+		X string `latch:"1"`
 	}
 	_, err := r.Resolve(reflect.TypeOf(inline{}))
 	if err == nil {
@@ -159,11 +154,11 @@ func TestRejectUnsupportedKinds(t *testing.T) {
 
 func TestRejectEmbeddedField(t *testing.T) {
 	type Base struct {
-		X string `json:"x"`
+		X string `latch:"1"`
 	}
 	type WithEmbed struct {
 		Base
-		Y string `json:"y"`
+		Y string `latch:"2"`
 	}
 	r := NewRegistry()
 	_, err := r.Resolve(reflect.TypeOf(WithEmbed{}))
@@ -172,22 +167,10 @@ func TestRejectEmbeddedField(t *testing.T) {
 	}
 }
 
-func TestRejectDuplicateJSONName(t *testing.T) {
-	type Dup struct {
-		A string `json:"same"`
-		B string `json:"same"`
-	}
-	r := NewRegistry()
-	_, err := r.Resolve(reflect.TypeOf(Dup{}))
-	if err == nil {
-		t.Fatalf("expected error for duplicate JSON field name")
-	}
-}
-
 func TestSelfReferentialType(t *testing.T) {
 	type Node struct {
-		Value    string  `json:"value"`
-		Children []*Node `json:"children"`
+		Value    string  `latch:"1"`
+		Children []*Node `latch:"2"`
 	}
 	r := NewRegistry()
 	ref, err := r.Resolve(reflect.TypeOf(Node{}))

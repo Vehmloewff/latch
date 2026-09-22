@@ -169,7 +169,7 @@ func (e *encoder) value(v reflect.Value, depth int) error {
 		var fields []reflect.StructField
 		for i := 0; i < v.NumField(); i++ {
 			sf := v.Type().Field(i)
-			if sf.PkgPath != "" || sf.Tag.Get("json") == "-" {
+			if sf.PkgPath != "" {
 				continue
 			}
 			if strings.Contains(sf.Tag.Get("latch"), ",omitempty") && v.Field(i).IsZero() {
@@ -567,7 +567,7 @@ func (d *decoder) structValue(o reflect.Value, depth int) error {
 	by := map[uint64]int{}
 	for i := 0; i < o.NumField(); i++ {
 		sf := o.Type().Field(i)
-		if sf.PkgPath != "" || sf.Tag.Get("json") == "-" {
+		if sf.PkgPath != "" {
 			continue
 		}
 		id, e := fieldNumber(sf)

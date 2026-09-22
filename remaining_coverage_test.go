@@ -14,15 +14,13 @@ import (
 type remainingCoverageState struct{}
 
 type remainingCoverageEvent struct {
-	Kind string `json:"kind"`
+	Kind string `latch:"1"`
 }
-
 type remainingCoverageRequest struct {
-	Value int `json:"value"`
+	Value int `latch:"1"`
 }
-
 type remainingCoverageResponse struct {
-	Value int `json:"value"`
+	Value int `latch:"1"`
 }
 
 func TestServerMethodsReturnsSortedDescriptorsAndEventsCompatibilitySnapshot(t *testing.T) {
