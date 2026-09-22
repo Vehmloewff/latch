@@ -155,7 +155,15 @@ func Build() *latch.Server[State] {
 		}
 		mu.Lock()
 		nextMessageID++
-		message := ChatMessage{ID: nextMessageID, Room: req.Room, SenderID: req.SenderID, Text: req.Text, SentAt: time.Now().UTC()}
+		message := ChatMessage{
+			ID:       nextMessageID,
+			Room:     req.Room,
+			SenderID: req.SenderID,
+			Text:     req.Text,
+			// Dart DateTime has microsecond precision; keep the wire timestamp
+			// representable by every generated client.
+			SentAt: time.Now().UTC().Truncate(time.Microsecond),
+		}
 		messages[req.Room] = append(messages[req.Room], message)
 		mu.Unlock()
 		broadcast(Event{Kind: "message", Message: &MessageReceived{Message: message}}, req.Room)
