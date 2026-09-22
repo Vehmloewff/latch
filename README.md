@@ -81,7 +81,21 @@ func main() {
 ```
 
 A `Server` implements `http.Handler`, so it can be mounted directly on any Go
-HTTP server.
+HTTP server. Connections must include a non-empty `version` query parameter;
+the generated clients add `?version=1` automatically from the configured
+`ProtocolVersion`. A raw WebSocket client should connect to
+`ws://localhost:8080/ws?version=1`.
+
+To run the server, save the snippet as `main.go` in a new Go module and run:
+
+```sh
+go mod init example.com/quickstart
+go get github.com/vehmloewff/latch
+go run .
+```
+
+Keep client generation in a separate Go program (or your build tooling), since
+it finalizes the same server definition and writes the generated source files.
 
 ## Generate clients
 
@@ -117,24 +131,6 @@ func main() {
 Use `GenerateSchema` when integrating the in-process normalized protocol IR with custom generators.
 
 ## Generated clients
-
-The basic example's complete cross-language check is intentionally a standalone
-command rather than part of `go test`:
-
-```sh
-go run ./cmd/cross-language-test
-```
-
-Language arguments are optional: `go`, `dart`, and `typescript`. With no
-arguments all languages run; for example:
-
-```sh
-go run ./cmd/cross-language-test typescript dart
-```
-
-The command regenerates the clients, runs static checks for the selected
-languages, starts the Go server when needed, then runs the selected integration
-tests.
 
 TypeScript:
 
@@ -198,9 +194,18 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 ```sh
 go build ./...
 go test ./...
+
+# Binary runtime tests
+(cd codegen/typescript/binary_runtime && npm ci && npm test)
+(cd codegen/dart/binary_runtime && dart pub get && dart test)
+
+# Cross-language example integration tests
 go run ./cmd/cross-language-test
 ```
 
-The cross-language runner uses the generated clients with the available
-TypeScript, Dart, and Go toolchains. The complete working example is in
-[`examples/chat_app`](examples/chat_app).
+The binary runtime tests exercise the standalone TypeScript and Dart codecs.
+The cross-language runner is separate from `go test`: it discovers examples,
+regenerates their clients, runs the selected language checks, starts the Go
+server, and runs the integration programs. Language arguments are optional:
+`go`, `dart`, and `typescript`; with no arguments, all three run. The complete
+working example is in [`examples/chat_app`](examples/chat_app).

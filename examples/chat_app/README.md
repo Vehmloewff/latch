@@ -98,6 +98,7 @@ go test ./golang
 ```
 
 The example prints each step of Bob and Alice's chat session.
+
 ## Run the TypeScript client and tests
 
 ```sh
@@ -114,7 +115,7 @@ WebSocket frames.
 
 ```sh
 cd dart
-dart analyze lib main.dart
+dart analyze lib main.dart test
 dart run main.dart
 dart test
 ```
