@@ -25,7 +25,7 @@ jobs:
         run: go test ./...
 
       - name: Run Go cross-language integration tests
-        run: go run ./cmd/cross-language-test go
+        run: go run ./integration_test go
 
   dart:
     name: Dart tests
@@ -54,19 +54,19 @@ jobs:
         run: dart test
 
       - name: Install chat app dependencies
-        working-directory: examples/chat_app/dart
+        working-directory: chat_app_example/dart
         run: dart pub get
 
       - name: Analyze chat app
-        working-directory: examples/chat_app/dart
+        working-directory: chat_app_example/dart
         run: dart analyze lib main.dart test
 
       - name: Run chat app tests
-        working-directory: examples/chat_app/dart
+        working-directory: chat_app_example/dart
         run: dart test
 
       - name: Run Dart cross-language integration tests
-        run: go run ./cmd/cross-language-test dart
+        run: go run ./integration_test dart
 
   node:
     name: Node tests
@@ -82,7 +82,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             codegen/typescript/binary_runtime/package-lock.json
-            examples/chat_app/typescript/package-lock.json
+            chat_app_example/typescript/package-lock.json
 
       - name: Set up Go for integration tests
         uses: actions/setup-go@v5
@@ -99,16 +99,16 @@ jobs:
         run: npm test
 
       - name: Install chat app dependencies
-        working-directory: examples/chat_app/typescript
+        working-directory: chat_app_example/typescript
         run: npm ci
 
       - name: Run chat app type checks
-        working-directory: examples/chat_app/typescript
+        working-directory: chat_app_example/typescript
         run: npm run check
 
       - name: Run chat app tests
-        working-directory: examples/chat_app/typescript
+        working-directory: chat_app_example/typescript
         run: npm test
 
       - name: Run Node cross-language integration tests
-        run: go run ./cmd/cross-language-test typescript
+        run: go run ./integration_test typescript

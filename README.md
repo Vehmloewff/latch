@@ -200,12 +200,12 @@ go test ./...
 (cd codegen/dart/binary_runtime && dart pub get && dart test)
 
 # Cross-language example integration tests
-go run ./cmd/cross-language-test
+go run ./integration_test
 ```
 
 The binary runtime tests exercise the standalone TypeScript and Dart codecs.
-The cross-language runner is separate from `go test`: it discovers examples,
-regenerates their clients, runs the selected language checks, starts the Go
-server, and runs the integration programs. Language arguments are optional:
-`go`, `dart`, and `typescript`; with no arguments, all three run. The complete
-working example is in [`examples/chat_app`](examples/chat_app).
+The cross-language runner is separate from `go test`: it regenerates the chat
+app example's clients, runs the selected language checks, starts its Go server,
+and runs the integration programs. Language arguments are optional: `go`,
+`dart`, and `typescript`; with no arguments, all three run. The complete
+working example is in [`chat_app_example`](chat_app_example).

@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/vehmloewff/latch/examples/chat_app/api"
+	"github.com/vehmloewff/latch/chat_app_example/api"
 )
 
 func main() {

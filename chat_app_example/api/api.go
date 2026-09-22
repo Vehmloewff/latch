@@ -1,4 +1,4 @@
-// Package api defines the complete protocol used by the chat_app example.
+// Package api defines the complete protocol used by the chat_app_example.
 package api
 
 import (

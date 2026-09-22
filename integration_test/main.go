@@ -1,7 +1,5 @@
-// Command cross-language-test discovers every example under examples/, runs its
-// generator, performs language static checks, starts its Go server, and runs
-// the checked-in language integration programs. It is intentionally outside
-// the normal Go test suite.
+// Command integration_test runs the chat app example's cross-language
+// integration checks. It is intentionally outside the normal Go test suite.
 package main
 
 import (
@@ -11,17 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"time"
 )
 
-const root = "."
-
-type example struct {
-	name string
-	dir  string
-}
+const (
+	root        = "."
+	exampleName = "chat_app_example"
+	exampleDir  = exampleName
+)
 
 func run(dir, name string, args ...string) {
 	cmd := exec.Command(name, args...)
@@ -33,41 +29,16 @@ func run(dir, name string, args ...string) {
 }
 
 func main() {
-	selected := languages(os.Args[1:])
-	examples := discoverExamples()
-	if len(examples) == 0 {
-		panic("no examples with both gen/ and server/ directories found")
-	}
-	for i, ex := range examples {
-		runExample(ex, i, selected)
-	}
+	runExample(languages(os.Args[1:]))
 }
 
-func discoverExamples() []example {
-	entries, err := os.ReadDir(filepath.Join(root, "examples"))
-	if err != nil {
-		panic(err)
-	}
-	var result []example
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, "examples", entry.Name())
-		if isDir(filepath.Join(dir, "cmd", "generate_clients")) && isDir(filepath.Join(dir, "cmd", "server")) {
-			result = append(result, example{name: entry.Name(), dir: dir})
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].name < result[j].name })
-	return result
-}
+func runExample(selected map[string]bool) {
+	ex := filepath.Join(root, exampleDir)
+	fmt.Printf("\n=== example: %s ===\n", exampleName)
+	run(ex, "go", "run", "./cmd/generate_clients")
 
-func runExample(ex example, index int, selected map[string]bool) {
-	fmt.Printf("\n=== example: %s ===\n", ex.name)
-	run(ex.dir, "go", "run", "./cmd/generate_clients")
-
-	ts := filepath.Join(ex.dir, "typescript")
-	dart := filepath.Join(ex.dir, "dart")
+	ts := filepath.Join(ex, "typescript")
+	dart := filepath.Join(ex, "dart")
 
 	// Go is compiled and tested after the example server starts below.
 	if selected["typescript"] {
@@ -82,7 +53,7 @@ func runExample(ex example, index int, selected map[string]bool) {
 		return
 	}
 
-	port := 18080 + index
+	port := 18080
 	address := "127.0.0.1:" + strconv.Itoa(port)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -92,7 +63,7 @@ func runExample(ex example, index int, selected map[string]bool) {
 	}
 	defer os.RemoveAll(tmp)
 	serverBinary := filepath.Join(tmp, "server")
-	run(ex.dir, "go", "build", "-o", serverBinary, "./cmd/server")
+	run(ex, "go", "build", "-o", serverBinary, "./cmd/server")
 	server := exec.CommandContext(ctx, serverBinary)
 	server.Dir = root
 	server.Env = append(os.Environ(), "PORT="+strconv.Itoa(port))
@@ -106,45 +77,40 @@ func runExample(ex example, index int, selected map[string]bool) {
 	env := append(os.Environ(), "SERVER_URL=ws://"+address+"/ws")
 	if selected["go"] {
 		goTest := exec.Command("go", "test", "./golang")
-		goTest.Dir, goTest.Env, goTest.Stdout, goTest.Stderr = ex.dir, env, os.Stdout, os.Stderr
+		goTest.Dir, goTest.Env, goTest.Stdout, goTest.Stderr = ex, env, os.Stdout, os.Stderr
 		if err := goTest.Run(); err != nil {
-			panic(fmt.Errorf("%s Go protocol tests: %w", ex.name, err))
+			panic(fmt.Errorf("%s Go protocol tests: %w", exampleName, err))
 		}
 		runGo := exec.Command("go", "run", "./golang/example")
-		runGo.Dir, runGo.Env, runGo.Stdout, runGo.Stderr = ex.dir, env, os.Stdout, os.Stderr
+		runGo.Dir, runGo.Env, runGo.Stdout, runGo.Stderr = ex, env, os.Stdout, os.Stderr
 		if err := runGo.Run(); err != nil {
-			panic(fmt.Errorf("%s Go example: %w", ex.name, err))
+			panic(fmt.Errorf("%s Go example: %w", exampleName, err))
 		}
 	}
 	if selected["typescript"] {
 		node := exec.Command("npm", "test")
 		node.Dir, node.Env, node.Stdout, node.Stderr = ts, env, os.Stdout, os.Stderr
 		if err := node.Run(); err != nil {
-			panic(fmt.Errorf("%s TypeScript protocol tests: %w", ex.name, err))
+			panic(fmt.Errorf("%s TypeScript protocol tests: %w", exampleName, err))
 		}
 		exampleRun := exec.Command("npm", "run", "example")
 		exampleRun.Dir, exampleRun.Env, exampleRun.Stdout, exampleRun.Stderr = ts, env, os.Stdout, os.Stderr
 		if err := exampleRun.Run(); err != nil {
-			panic(fmt.Errorf("%s TypeScript example: %w", ex.name, err))
+			panic(fmt.Errorf("%s TypeScript example: %w", exampleName, err))
 		}
 	}
 	if selected["dart"] {
 		dartTests := exec.Command("dart", "test")
 		dartTests.Dir, dartTests.Env, dartTests.Stdout, dartTests.Stderr = dart, env, os.Stdout, os.Stderr
 		if err := dartTests.Run(); err != nil {
-			panic(fmt.Errorf("%s Dart protocol tests: %w", ex.name, err))
+			panic(fmt.Errorf("%s Dart protocol tests: %w", exampleName, err))
 		}
 		dartMain := exec.Command("dart", "run", "main.dart")
 		dartMain.Dir, dartMain.Env, dartMain.Stdout, dartMain.Stderr = dart, env, os.Stdout, os.Stderr
 		if err := dartMain.Run(); err != nil {
-			panic(fmt.Errorf("%s Dart example: %w", ex.name, err))
+			panic(fmt.Errorf("%s Dart example: %w", exampleName, err))
 		}
 	}
-}
-
-func isDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 func languages(args []string) map[string]bool {

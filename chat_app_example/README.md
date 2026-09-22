@@ -10,7 +10,7 @@ The protocol source is `api/api.go`. Generated clients are written to
 ## Layout
 
 ```text
-chat_app/
+chat_app_example/
 ├── api/                         Protocol source of truth
 ├── cmd/
 │   ├── generate_clients/        Client generator

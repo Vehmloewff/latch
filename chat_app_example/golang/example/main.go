@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	chat "github.com/vehmloewff/latch/examples/chat_app/golang"
+	chat "github.com/vehmloewff/latch/chat_app_example/golang"
 )
 
 // Story: Bob has opened a chat app and Alice is already using the same room.

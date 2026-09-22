@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vehmloewff/latch/examples/chat_app/api"
+	"github.com/vehmloewff/latch/chat_app_example/api"
 )
 
 func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {

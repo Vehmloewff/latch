@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/vehmloewff/latch"
-	"github.com/vehmloewff/latch/examples/chat_app/api"
+	"github.com/vehmloewff/latch/chat_app_example/api"
 )
 
 func main() {
@@ -24,5 +24,5 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("generated clients written to examples/chat_app/{typescript,dart,golang}")
+	log.Println("generated clients written to chat_app_example/{typescript,dart,golang}")
 }

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vehmloewff/latch/chat_app_example/api"
+	chatappclient "github.com/vehmloewff/latch/chat_app_example/golang"
 	"github.com/vehmloewff/latch/client"
-	"github.com/vehmloewff/latch/examples/chat_app/api"
-	chatappclient "github.com/vehmloewff/latch/examples/chat_app/golang"
 )
 
 func connectChatClient(t *testing.T, url string) *chatappclient.ConnectedLatchClient {
