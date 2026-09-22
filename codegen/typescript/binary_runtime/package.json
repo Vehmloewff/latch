@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node dist/test.js"
+    "test": "npm run build && node dist/test.js && node dist/edge_test.js"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
