@@ -1,9 +1,8 @@
 // Package protocol defines Latch's normalized intermediate representation
 // (IR) of a registered API. Exactly one stage (package reflectapi) converts
-// Go reflection into this IR. Every downstream consumer — JSON Schema
-// generation, runtime validation, the manifest, and the TypeScript/Dart/Go
-// code generators — reads this IR and never re-inspects Go reflect.Type
-// values directly.
+// Go reflection into this IR. Every downstream consumer — the manifest and
+// the TypeScript/Dart/Go code generators — reads this IR and never re-inspects
+// Go reflect.Type values directly.
 package protocol
 
 // Kind identifies the shape of a TypeRef or NamedType.
@@ -49,17 +48,6 @@ func (k Kind) Is64Bit() bool {
 	return k == KindInt64 || k == KindUint64
 }
 
-// Constraints holds optional JSON Schema validation keywords parsed from a
-// field's `jsonschema:"..."` struct tag.
-type Constraints struct {
-	MinLength *int
-	MaxLength *int
-	Minimum   *float64
-	Maximum   *float64
-	Pattern   string
-	Format    string
-}
-
 // TypeRef refers to a type used in a field, method request/response, or the
 // server event payload. For KindStruct and KindEnum, NamedType is the ID of
 // the corresponding entry in Protocol.Types.
@@ -81,12 +69,11 @@ type TypeRef struct {
 
 // Field is one field of a NamedType of kind KindStruct.
 type Field struct {
-	GoName      string
-	JSONName    string
-	Type        TypeRef
-	Optional    bool // json tag carries `,omitempty`
-	Nullable    bool // Go field type is a pointer
-	Constraints Constraints
+	GoName   string
+	JSONName string
+	Type     TypeRef
+	Optional bool // json tag carries `,omitempty`
+	Nullable bool // Go field type is a pointer
 }
 
 // NamedType is a struct or enum type that generated clients emit as a
@@ -119,8 +106,7 @@ type Method struct {
 }
 
 // Protocol is the complete normalized representation of a Latch API,
-// ready to drive JSON Schema generation, runtime validation, the manifest,
-// and every language code generator.
+// ready to drive the manifest and every language code generator.
 type Protocol struct {
 	// Name is retained only for decoding older manifests. New servers do not
 	// set or use a protocol name.

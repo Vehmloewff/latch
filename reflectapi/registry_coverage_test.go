@@ -48,7 +48,6 @@ type registryCoverageTagged struct {
 	EmptyName   string  `json:",omitempty"`
 	Nullable    *string `json:"nullable"`
 	Skipped     string  `json:"-"`
-	Constrained string  `json:"constrained" jsonschema:"minLength=1,maxLength=32,minimum=-2.5,maximum=99.25,pattern=^[a-z]+$,format=slug,unknown=ignored"`
 }
 
 type registryCoverageOrderZulu struct {
@@ -161,7 +160,7 @@ func TestRegistryRejectsInvalidEnumTags(t *testing.T) {
 	}
 }
 
-func TestRegistryCarriesAllJSONSchemaConstraintsAndJSONTags(t *testing.T) {
+func TestRegistryCarriesJSONTags(t *testing.T) {
 	r := NewRegistry()
 	ref, err := r.Resolve(reflect.TypeOf(registryCoverageTagged{}))
 	if err != nil {
@@ -184,7 +183,7 @@ func TestRegistryCarriesAllJSONSchemaConstraintsAndJSONTags(t *testing.T) {
 	for _, field := range named.Fields {
 		fields[field.JSONName] = field
 	}
-	if len(fields) != 5 {
+	if len(fields) != 4 {
 		t.Fatalf("fields = %#v, want skipped field omitted", fields)
 	}
 	if _, ok := fields["Skipped"]; ok {
@@ -203,22 +202,6 @@ func TestRegistryCarriesAllJSONSchemaConstraintsAndJSONTags(t *testing.T) {
 		t.Fatalf("nullable field = %#v, want nullable pointer", fields["nullable"])
 	}
 
-	constraints := fields["constrained"].Constraints
-	if constraints.MinLength == nil || *constraints.MinLength != 1 {
-		t.Fatalf("MinLength = %v, want 1", constraints.MinLength)
-	}
-	if constraints.MaxLength == nil || *constraints.MaxLength != 32 {
-		t.Fatalf("MaxLength = %v, want 32", constraints.MaxLength)
-	}
-	if constraints.Minimum == nil || *constraints.Minimum != -2.5 {
-		t.Fatalf("Minimum = %v, want -2.5", constraints.Minimum)
-	}
-	if constraints.Maximum == nil || *constraints.Maximum != 99.25 {
-		t.Fatalf("Maximum = %v, want 99.25", constraints.Maximum)
-	}
-	if constraints.Pattern != "^[a-z]+$" || constraints.Format != "slug" {
-		t.Fatalf("pattern/format = %q/%q, want regex and slug", constraints.Pattern, constraints.Format)
-	}
 }
 
 func TestRegistryTypesAreDeterministicallySortedByID(t *testing.T) {

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -293,15 +292,12 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 		}
 		seen[jsonName] = sf.Name
 
-		constraints := parseConstraintsTag(sf)
-
 		fields = append(fields, protocol.Field{
-			GoName:      sf.Name,
-			JSONName:    jsonName,
-			Type:        ref,
-			Optional:    optional,
-			Nullable:    nullable,
-			Constraints: constraints,
+			GoName:   sf.Name,
+			JSONName: jsonName,
+			Type:     ref,
+			Optional: optional,
+			Nullable: nullable,
 		})
 	}
 
@@ -362,45 +358,4 @@ func declareFieldEnum(r *Registry, sf reflect.StructField) error {
 		values[i] = strings.TrimSpace(values[i])
 	}
 	return r.declareEnum(t, values)
-}
-
-// parseConstraintsTag reads a `jsonschema:"minLength=1,maximum=10"` style
-// tag into protocol.Constraints. Unknown keys are ignored.
-func parseConstraintsTag(sf reflect.StructField) protocol.Constraints {
-	var c protocol.Constraints
-	tag, ok := sf.Tag.Lookup("jsonschema")
-	if !ok || tag == "" {
-		return c
-	}
-	for _, part := range strings.Split(tag, ",") {
-		kv := strings.SplitN(part, "=", 2)
-		key := strings.TrimSpace(kv[0])
-		var val string
-		if len(kv) == 2 {
-			val = strings.TrimSpace(kv[1])
-		}
-		switch key {
-		case "minLength":
-			if n, err := strconv.Atoi(val); err == nil {
-				c.MinLength = &n
-			}
-		case "maxLength":
-			if n, err := strconv.Atoi(val); err == nil {
-				c.MaxLength = &n
-			}
-		case "minimum":
-			if f, err := strconv.ParseFloat(val, 64); err == nil {
-				c.Minimum = &f
-			}
-		case "maximum":
-			if f, err := strconv.ParseFloat(val, 64); err == nil {
-				c.Maximum = &f
-			}
-		case "pattern":
-			c.Pattern = val
-		case "format":
-			c.Format = val
-		}
-	}
-	return c
 }

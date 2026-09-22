@@ -16,7 +16,7 @@ type Address struct {
 type Status string
 
 type Widget struct {
-	ID        string            `json:"id" jsonschema:"minLength=1"`
+	ID        string            `json:"id"`
 	Name      string            `json:"name,omitempty"`
 	Nickname  *string           `json:"nickname"`
 	Alias     *string           `json:"alias,omitempty"`
@@ -77,9 +77,6 @@ func TestResolveStructShape(t *testing.T) {
 	id := fieldsByJSON["id"]
 	if id.Optional || id.Nullable {
 		t.Fatalf("id should be required+non-null, got %+v", id)
-	}
-	if id.Constraints.MinLength == nil || *id.Constraints.MinLength != 1 {
-		t.Fatalf("id should carry minLength=1, got %+v", id.Constraints)
 	}
 
 	name := fieldsByJSON["name"]

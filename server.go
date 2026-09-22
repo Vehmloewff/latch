@@ -288,9 +288,9 @@ func adaptOnConnect[S any](fn any) (func(context.Context, any, *Conn) (any, erro
 }
 
 // finalize resolves every registered type via reflection into the protocol
-// IR, checks for naming collisions, and compiles every JSON Schema
-// validator exactly once. It runs at most once; subsequent calls return the
-// same result. Registration methods reject calls made after finalization.
+// IR and checks for naming collisions. It runs at most once; subsequent calls
+// return the same result. Registration methods reject calls made after
+// finalization.
 func (s *Server[S]) finalize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
