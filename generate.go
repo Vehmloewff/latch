@@ -8,6 +8,7 @@ import (
 
 	"github.com/vehmloewff/latch/codegen/dart"
 	"github.com/vehmloewff/latch/codegen/golang"
+	"github.com/vehmloewff/latch/codegen/swift"
 	"github.com/vehmloewff/latch/codegen/typescript"
 	"github.com/vehmloewff/latch/protocol"
 )
@@ -55,12 +56,21 @@ type GoOptions struct {
 	ClientName string
 }
 
+// SwiftOptions configures Swift client generation.
+type SwiftOptions struct {
+	// OutputDir is the directory the generated Swift source file is written to.
+	OutputDir string
+	// ClientName overrides the generated client class name (default LatchClient).
+	ClientName string
+}
+
 // GenerateOptions selects which language clients Server.Generate produces.
 // Leave a field nil to skip that language.
 type GenerateOptions struct {
 	TypeScript *TypeScriptOptions
 	Dart       *DartOptions
 	Go         *GoOptions
+	Swift      *SwiftOptions
 }
 
 // Schema finalizes the server (if necessary) and returns the normalized
@@ -141,6 +151,22 @@ func (s *Server[S]) GenerateGo(opts GoOptions) error {
 	return nil
 }
 
+// GenerateSwift finalizes the server and writes a standalone Swift client.
+func (s *Server[S]) GenerateSwift(opts SwiftOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := swift.Generate(schema, swift.Options{ClientName: opts.ClientName})
+	if err != nil {
+		return fmt.Errorf("latch: generate swift: %w", err)
+	}
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latch: write swift output: %w", err)
+	}
+	return nil
+}
+
 // Generate finalizes the server (if not already finalized) and writes
 // generated client code for every requested language. It is retained as a
 // convenience wrapper; callers that want one target can use
@@ -158,6 +184,11 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	}
 	if opts.Go != nil {
 		if err := s.GenerateGo(*opts.Go); err != nil {
+			return err
+		}
+	}
+	if opts.Swift != nil {
+		if err := s.GenerateSwift(*opts.Swift); err != nil {
 			return err
 		}
 	}

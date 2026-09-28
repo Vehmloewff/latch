@@ -1,7 +1,7 @@
 # Latch
 
 Latch turns a Go-defined WebSocket API into type-safe clients for Go,
-TypeScript, and Dart.
+TypeScript, Dart, and Swift.
 
 Define your request, response, event, and connection-state types in Go. Register
 handlers on a `Server`, serve it as an `http.Handler`, and generate clients from
@@ -13,7 +13,7 @@ validation, and client code generation without a separate schema file.
 - Strongly typed RPC methods and server-to-client events
 - Go-first API with compile-time handler validation
 - Reflection-driven binary encoding and decoding with stable numeric field IDs
-- Generated TypeScript, Dart, and Go clients
+- Generated TypeScript, Dart, Go, and Swift clients
 - Deterministic client output
 - No `.proto`, OpenAPI document, or handwritten schema required
 
@@ -125,6 +125,12 @@ func main() {
     }); err != nil {
         log.Fatal(err)
     }
+
+    if err := server.GenerateSwift(latch.SwiftOptions{
+        OutputDir: "./swift",
+    }); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
@@ -154,6 +160,18 @@ final conn = await client.connect();
 final result = await conn.mathAdd(AddRequest(a: 1, b: 2));
 
 print(result.result);
+```
+
+Swift (generated as `LatchClient.swift`, using Swift concurrency and Foundation's WebSocket API):
+
+```swift
+let client = LatchClient(url: URL(string: "ws://localhost:8080/ws")!)
+let connection = try await client.connect()
+let result = try await connection.chatSendMessage(SendMessageRequest(room: "general", senderId: "user", text: "hello"))
+print(result.message.text)
+for await event in connection.events {
+    print(event)
+}
 ```
 
 Go:
@@ -186,8 +204,7 @@ unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `jsonschema_enum:"a,b,c"` tag. Every exported field in a protocol struct must
 have a `latch:"N"` tag with a positive, stable wire ID; use
 `latch:"N,omitempty"` for optional fields. Missing field numbers panic during
-wire encoding or decoding. Generated TypeScript and Dart field names are
-derived from the Go field names using lower camel case.
+wire encoding or decoding. Generated TypeScript and Dart field names are derived from the Go field names using lower camel case. Swift clients use Foundation and Swift concurrency, and expose RPC methods as `async throws` functions plus events as an `AsyncStream`.
 
 Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 `int64`/`uint64`, non-string map keys, and types implementing
@@ -207,7 +224,9 @@ go run ./integration_test
 The cross-language runner is separate from `go test`: it installs the selected
 language dependencies, runs the standalone TypeScript and Dart binary-runtime
 tests, regenerates the chat app example's clients, runs the selected language
-checks, starts its Go server, and runs the integration programs. Language
-arguments are optional: `go`, `dart`, and `typescript`; with no arguments, all
-three run. The complete working example is in
+checks, starts its Go server, and runs the integration programs. Run
+`go run ./integration_test swift` to compile the generated Swift client and run
+its WebSocket integration tests against the Go server. Language
+language arguments are optional: `go`, `dart`, `typescript`, and `swift`; with no
+arguments, all four run. The complete working example is in
 [`chat_app_example`](chat_app_example).

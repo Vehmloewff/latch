@@ -68,6 +68,22 @@ jobs:
       - name: Run Dart cross-language integration tests
         run: go run ./integration_test dart
 
+  swift:
+    name: Swift client tests
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Swift-to-Go WebSocket integration tests
+        run: go run ./integration_test swift
+
   node:
     name: Node tests
     runs-on: ubuntu-latest

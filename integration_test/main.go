@@ -53,7 +53,7 @@ func runExample(selected map[string]bool) {
 		run(dart, "dart", "pub", "get")
 		run(dart, "dart", "analyze", "lib", "main.dart", "test")
 	}
-	if !selected["go"] && !selected["typescript"] && !selected["dart"] {
+	if !selected["go"] && !selected["typescript"] && !selected["dart"] && !selected["swift"] {
 		return
 	}
 
@@ -103,6 +103,15 @@ func runExample(selected map[string]bool) {
 			panic(fmt.Errorf("%s TypeScript example: %w", exampleName, err))
 		}
 	}
+	if selected["swift"] {
+		binary := filepath.Join(tmp, "swift-client-integration")
+		run(ex, "swiftc", "-warnings-as-errors", "swift/LatchClient.swift", "swift/integration_test.swift", "-o", binary)
+		swiftTest := exec.Command(binary)
+		swiftTest.Dir, swiftTest.Env, swiftTest.Stdout, swiftTest.Stderr = ex, env, os.Stdout, os.Stderr
+		if err := swiftTest.Run(); err != nil {
+			panic(fmt.Errorf("%s Swift protocol tests: %w", exampleName, err))
+		}
+	}
 	if selected["dart"] {
 		dartTests := exec.Command("dart", "test")
 		dartTests.Dir, dartTests.Env, dartTests.Stdout, dartTests.Stderr = dart, env, os.Stdout, os.Stderr
@@ -131,7 +140,7 @@ func runBinaryRuntimeTests(selected map[string]bool) {
 }
 
 func languages(args []string) map[string]bool {
-	valid := map[string]bool{"go": true, "dart": true, "typescript": true}
+	valid := map[string]bool{"go": true, "dart": true, "typescript": true, "swift": true}
 	selected := map[string]bool{}
 	if len(args) == 0 {
 		for language := range valid {
@@ -141,7 +150,7 @@ func languages(args []string) map[string]bool {
 	}
 	for _, language := range args {
 		if !valid[language] {
-			panic(fmt.Sprintf("unknown language %q; choose go, dart, or typescript", language))
+			panic(fmt.Sprintf("unknown language %q; choose go, dart, typescript, or swift", language))
 		}
 		selected[language] = true
 	}
