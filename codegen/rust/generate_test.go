@@ -59,6 +59,9 @@ func TestGenerate(t *testing.T) {
 
 func TestGeneratedCargoCompiles(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
+		if os.Getenv("LATCH_RUST_REQUIRE") != "" {
+			t.Fatalf("cargo required for Rust CI tests: %v", err)
+		}
 		t.Skipf("cargo unavailable: %v", err)
 	}
 	target := filepath.Join(t.TempDir(), "target")
@@ -150,7 +153,7 @@ func runCargo(t *testing.T, p *protocol.Protocol, target string, rustTests strin
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+target)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "no matching package named") || strings.Contains(string(out), "failed to download") {
+		if os.Getenv("LATCH_RUST_REQUIRE") == "" && (strings.Contains(string(out), "no matching package named") || strings.Contains(string(out), "failed to download")) {
 			t.Skipf("cargo dependencies unavailable offline: %s", out)
 		}
 		t.Fatal(fmt.Sprintf("cargo test: %v\n%s", err, out))

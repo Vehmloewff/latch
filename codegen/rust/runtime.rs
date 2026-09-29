@@ -1391,6 +1391,9 @@ mod tests {
                         Err(e) => panic!("accept: {e}"),
                     }
                 };
+                // Accepted sockets can inherit the listener's nonblocking mode on
+                // some platforms; a WebSocket handshake must read to completion.
+                stream.set_nonblocking(false).unwrap();
                 let tx = headers_tx.clone();
                 let ws = tungstenite::accept_hdr(
                     stream,

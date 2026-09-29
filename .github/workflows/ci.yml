@@ -104,6 +104,33 @@ jobs:
       - name: Run generated C# binary and WebSocket tests
         run: go test ./codegen/csharp -count=1 -v
 
+  rust:
+    name: Rust client tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Fetch Rust client dependencies
+        run: cargo fetch --locked --manifest-path chat_app_example/rust/Cargo.toml
+
+      - name: Test generated Rust clients and wire codec
+        env:
+          LATCH_RUST_REQUIRE: '1'
+        run: go test ./codegen/rust -count=1 -v
+
+      - name: Run Rust lifecycle and live Go server integration tests
+        run: go run ./integration_test rust
+
   node:
     name: Node tests
     runs-on: ubuntu-latest
