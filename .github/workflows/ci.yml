@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
 
 permissions:
@@ -45,27 +46,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install binary runtime dependencies
-        working-directory: codegen/dart/binary_runtime
-        run: dart pub get
-
-      - name: Run binary runtime tests
-        working-directory: codegen/dart/binary_runtime
-        run: dart test
-
-      - name: Install chat app dependencies
-        working-directory: chat_app_example/dart
-        run: dart pub get
-
-      - name: Analyze chat app
-        working-directory: chat_app_example/dart
-        run: dart analyze lib main.dart test
-
-      - name: Run chat app tests
-        working-directory: chat_app_example/dart
-        run: dart test
-
-      - name: Run Dart cross-language integration tests
+      - name: Run Dart binary, analysis, and integration tests
         run: go run ./integration_test dart
 
   swift:
@@ -105,9 +86,7 @@ jobs:
           curl -fsSL -o /tmp/kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.1.20/kotlin-compiler-2.1.20.zip
           unzip -q /tmp/kotlin.zip -d /tmp/kotlin
           echo /tmp/kotlin/kotlinc/bin >> "$GITHUB_PATH"
-      - name: Run Kotlin binary and socket tests
-        run: go test ./codegen/kotlin -count=1 -v
-      - name: Run Kotlin integration tests
+      - name: Run Kotlin binary, socket, and integration tests
         run: go run ./integration_test kotlin
 
   csharp:
@@ -147,25 +126,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install binary runtime dependencies
-        working-directory: codegen/typescript/binary_runtime
-        run: npm ci
-
-      - name: Run binary runtime tests
-        working-directory: codegen/typescript/binary_runtime
-        run: npm test
-
-      - name: Install chat app dependencies
-        working-directory: chat_app_example/typescript
-        run: npm ci
-
-      - name: Run chat app type checks
-        working-directory: chat_app_example/typescript
-        run: npm run check
-
-      - name: Run chat app tests
-        working-directory: chat_app_example/typescript
-        run: npm test
-
-      - name: Run Node cross-language integration tests
+      - name: Run Node binary, type-check, and integration tests
         run: go run ./integration_test typescript
