@@ -13,16 +13,17 @@ import (
 	"github.com/vehmloewff/latch/client"
 )
 
-func connectChatClient(t *testing.T, url string) *chatappclient.ConnectedLatchClient {
+func connectChatClient(t *testing.T, url string) (*chatappclient.ConnectedLatchClient, <-chan chatappclient.Event) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	connected, err := chatappclient.New(url).Connect(ctx)
+	events := make(chan chatappclient.Event, 16)
+	connected, err := chatappclient.New(url, func(event chatappclient.Event) { events <- event }).Connect(ctx)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	t.Cleanup(func() { _ = connected.Close() })
-	return connected
+	return connected, events
 }
 
 func nextChatEvent(t *testing.T, events <-chan chatappclient.Event) chatappclient.Event {
@@ -49,8 +50,8 @@ func TestBuildServesValidationFanoutAndHistory(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	url := "ws" + strings.TrimPrefix(httpServer.URL, "http")
 
-	alice := connectChatClient(t, url)
-	bob := connectChatClient(t, url)
+	alice, aliceEvents := connectChatClient(t, url)
+	bob, bobEvents := connectChatClient(t, url)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -77,7 +78,7 @@ func TestBuildServesValidationFanoutAndHistory(t *testing.T) {
 	if _, err := alice.ChatJoinRoom(ctx, chatappclient.JoinRoomRequest{Room: "general", UserID: "alice"}); err != nil {
 		t.Fatalf("alice join: %v", err)
 	}
-	alicePresence := nextChatEvent(t, alice.Events())
+	alicePresence := nextChatEvent(t, aliceEvents)
 	if alicePresence.Kind != "presence" || alicePresence.Presence == nil || alicePresence.Presence.UserID != "alice" {
 		t.Fatalf("alice join event = %#v", alicePresence)
 	}
@@ -89,10 +90,10 @@ func TestBuildServesValidationFanoutAndHistory(t *testing.T) {
 	if len(joined.MemberIDs) != 2 || !contains(joined.MemberIDs, "alice") || !contains(joined.MemberIDs, "bob") {
 		t.Fatalf("bob members = %#v, want alice and bob", joined.MemberIDs)
 	}
-	if event := nextChatEvent(t, alice.Events()); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "bob" {
+	if event := nextChatEvent(t, aliceEvents); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "bob" {
 		t.Fatalf("alice bob-presence event = %#v", event)
 	}
-	if event := nextChatEvent(t, bob.Events()); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "bob" {
+	if event := nextChatEvent(t, bobEvents); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "bob" {
 		t.Fatalf("bob presence event = %#v", event)
 	}
 
@@ -104,7 +105,7 @@ func TestBuildServesValidationFanoutAndHistory(t *testing.T) {
 		t.Fatalf("sent message = %#v", sent.Message)
 	}
 
-	for name, events := range map[string]<-chan chatappclient.Event{"alice": alice.Events(), "bob": bob.Events()} {
+	for name, events := range map[string]<-chan chatappclient.Event{"alice": aliceEvents, "bob": bobEvents} {
 		event := nextChatEvent(t, events)
 		if event.Kind != "message" || event.Message == nil || event.Message.Message.Text != "hello" {
 			t.Fatalf("%s message event = %#v", name, event)

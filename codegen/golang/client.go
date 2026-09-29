@@ -154,8 +154,7 @@ func buildNamespaceInitChild(clientName, fieldExpr string, node *names.MethodNod
 	return b.String()
 }
 
-// generateClientFile renders client.go with direct RPC methods and one typed
-// server-event stream on the connected client.
+// generateClientFile renders client.go with direct RPC methods and constructor callbacks.
 func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typeNames map[string]string) (string, error) {
 	eventRef, err := eventType(p)
 	if err != nil {
@@ -172,27 +171,30 @@ func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typ
 
 	fmt.Fprintf(&b, "// %s is a Latch client. Construct one with New,\n", clientName)
 	fmt.Fprintf(&b, "// then call Connect to obtain a %s.\n", connectedName)
-	fmt.Fprintf(&b, "type %s struct {\n\turl string\n}\n\n", clientName)
-	fmt.Fprintf(&b, "// New creates a %s targeting the given WebSocket URL.\n", clientName)
-	fmt.Fprintf(&b, "func New(url string) *%s {\n\treturn &%s{url: url}\n}\n\n", clientName, clientName)
+	fmt.Fprintf(&b, "type %s struct {\n\turl string\n\tonEvent func(%s)\n\tonConnectionStateChange func(ConnectionState)\n}\n\n", clientName, eventGoType)
+	b.WriteString("// ConnectionState describes the lifecycle of a connection.\ntype ConnectionState string\n\nconst (\n\tConnectionStateConnecting ConnectionState = \"connecting\"\n\tConnectionStateOffline ConnectionState = \"offline\"\n\tConnectionStateConnected ConnectionState = \"connected\"\n)\n\n")
+	fmt.Fprintf(&b, "// New creates a %s targeting the given WebSocket URL. onConnectionStateChange is optional.\n", clientName)
+	fmt.Fprintf(&b, "func New(url string, onEvent func(%s), onConnectionStateChange ...func(ConnectionState)) *%s {\n", eventGoType, clientName)
+	b.WriteString("\tvar onState func(ConnectionState)\n\tif len(onConnectionStateChange) > 0 {\n\t\tonState = onConnectionStateChange[0]\n\t}\n")
+	fmt.Fprintf(&b, "\treturn &%s{url: url, onEvent: onEvent, onConnectionStateChange: onState}\n}\n\n", clientName)
 
 	fmt.Fprintf(&b, "// Connect opens a live %s.\n", connectedName)
 	fmt.Fprintf(&b, "func (c *%s) Connect(ctx context.Context) (*%s, error) {\n", clientName, connectedName)
+	b.WriteString("\tif c.onConnectionStateChange != nil {\n\t\tc.onConnectionStateChange(ConnectionStateConnecting)\n\t}\n")
 	fmt.Fprintf(&b, "\tconn, err := client.Connect(ctx, c.url, %q)\n", p.Version)
-	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
-	fmt.Fprintf(&b, "\tresult := &%s{conn: conn, events: client.RegisterEvent[%s](conn)}\n", connectedName, eventGoType)
-	b.WriteString("\tconn.Start()\n")
+	b.WriteString("\tif err != nil {\n\t\tif c.onConnectionStateChange != nil {\n\t\t\tc.onConnectionStateChange(ConnectionStateOffline)\n\t\t}\n\t\treturn nil, err\n\t}\n\n")
+	fmt.Fprintf(&b, "\tevents := client.RegisterEvent[%s](conn)\n", eventGoType)
+	fmt.Fprintf(&b, "\tresult := &%s{conn: conn}\n", connectedName)
+	b.WriteString("\tif c.onConnectionStateChange != nil {\n\t\tc.onConnectionStateChange(ConnectionStateConnected)\n\t}\n\tgo func() {\n\t\tfor event := range events {\n\t\t\tif c.onEvent != nil {\n\t\t\t\tc.onEvent(event)\n\t\t\t}\n\t\t}\n\t\tif c.onConnectionStateChange != nil {\n\t\t\tc.onConnectionStateChange(ConnectionStateOffline)\n\t\t}\n\t}()\n\tconn.Start()\n")
 	b.WriteString("\treturn result, nil\n}\n\n")
 
 	fmt.Fprintf(&b, "// %s is a live, connected %s client.\n", connectedName, clientName)
-	fmt.Fprintf(&b, "type %s struct {\n\tconn *client.Conn\n\tevents <-chan %s\n", connectedName, eventGoType)
+	fmt.Fprintf(&b, "type %s struct {\n\tconn *client.Conn\n", connectedName)
 	b.WriteString("}\n\n")
 
 	for _, m := range p.Methods {
 		b.WriteString(renderMethodFunc(connectedName, "c", m.Name, methods[m.Name], typeNames))
 	}
-	fmt.Fprintf(&b, "// Events returns the single server-to-client event stream.\n")
-	fmt.Fprintf(&b, "func (c *%s) Events() <-chan %s {\n\treturn c.events\n}\n\n", connectedName, eventGoType)
 
 	fmt.Fprintf(&b, "// Close closes the connection.\n")
 	fmt.Fprintf(&b, "func (c *%s) Close() error {\n\treturn c.conn.Close()\n}\n\n", connectedName)

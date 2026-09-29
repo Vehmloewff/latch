@@ -146,9 +146,9 @@ func main() {
 }
 ```
 
-The Kotlin/JVM target generates a standalone `LatchClient.kt` using the JDK WebSocket client (Java 11+) and Kotlin standard library. Connect with `LatchClient(url).connect()`, call typed methods on the returned connection, set `onEvent` to receive events, and call `close()` when done. Run `go test ./codegen/kotlin -v` with `kotlinc` and Java installed for binary and socket tests; `go run ./integration_test kotlin` also generates the example client.
+The Kotlin/JVM target generates a standalone `LatchClient.kt` using the JDK WebSocket client (Java 11+) and Kotlin standard library. Connect with `LatchClient(url, onEvent = { event -> /* handle event */ }).connect()`, call typed methods on the returned connection, and call `close()` when done. Pass `onConnectionStateChange` to observe connection lifecycle changes. Run `go test ./codegen/kotlin -v` with `kotlinc` and Java installed for binary and socket tests; `go run ./integration_test kotlin` also generates the example client.
 
-The C# target generates a standalone `LatchClient.cs` for .NET 8+ with no NuGet dependencies. Connect with `await new LatchClient(url).ConnectAsync()`, call typed `*Async` methods on the returned connection, set `OnEvent` and `OnEventError` callbacks, and dispose it with `await using`. Run `go test ./codegen/csharp -v` with the .NET SDK installed to compile and exercise binary and WebSocket tests.
+The C# target generates a standalone `LatchClient.cs` for .NET 8+ with no NuGet dependencies. Connect with `await new LatchClient(url, onEvent: e => Console.WriteLine(e)).ConnectAsync()`, call typed `*Async` methods on the returned connection, and dispose it with `await using`. The constructor also accepts optional `onConnectionStateChange` and `onEventError` callbacks. Run `go test ./codegen/csharp -v` with the .NET SDK installed to compile and exercise binary and WebSocket tests.
 
 Use `GenerateSchema` when integrating the in-process normalized protocol IR with custom generators.
 
@@ -159,7 +159,11 @@ TypeScript:
 ```ts
 import { LatchClient } from "./typescript";
 
-const client = new LatchClient({ url: "ws://localhost:8080/ws" });
+const client = new LatchClient({
+  url: "ws://localhost:8080/ws",
+  onEvent: event => console.log(event),
+  onConnectionStateChange: state => console.log(state), // optional
+});
 const conn = await client.connect();
 const result = await conn.mathAdd({ a: 1, b: 2 });
 
@@ -171,6 +175,8 @@ Dart:
 ```dart
 final client = LatchClient(
   ClientOptions(Uri.parse('ws://localhost:8080/ws')),
+  onEvent: (event) => print(event),
+  onConnectionStateChange: (state) => print(state), // optional
 );
 final conn = await client.connect();
 final result = await conn.mathAdd(AddRequest(a: 1, b: 2));
@@ -184,19 +190,19 @@ Swift (generated into the `LatchClient` Swift package, using Swift concurrency a
 import Foundation
 import LatchClient
 
-let client = LatchClient(url: URL(string: "ws://localhost:8080/ws")!)
+let client = LatchClient(url: URL(string: "ws://localhost:8080/ws")!, onEvent: { event in print(event) })
 let connection = try await client.connect()
 let result = try await connection.chatSendMessage(SendMessageRequest(room: "general", senderId: "user", text: "hello"))
 print(result.message.text)
-for await event in connection.events {
-    print(event)
-}
+
 ```
 
 Go:
 
 ```go
-client := latchclient.New("ws://localhost:8080/ws")
+client := latchclient.New("ws://localhost:8080/ws", func(event latchclient.Event) {
+    fmt.Println(event)
+})
 conn, err := client.Connect(ctx)
 if err != nil {
     log.Fatal(err)
@@ -223,7 +229,7 @@ unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `jsonschema_enum:"a,b,c"` tag. Every exported field in a protocol struct must
 have a `latch:"N"` tag with a positive, stable wire ID; use
 `latch:"N,omitempty"` for optional fields. Missing field numbers panic during
-wire encoding or decoding. Generated TypeScript and Dart field names are derived from the Go field names using lower camel case. Swift clients use Foundation and Swift concurrency, and expose RPC methods as `async throws` functions plus events as an `AsyncStream`.
+wire encoding or decoding. Generated TypeScript and Dart field names are derived from the Go field names using lower camel case. Swift clients use Foundation and Swift concurrency, and expose RPC methods as `async throws` functions with events delivered to the constructor callback. All generated clients expose `connecting`, `connected`, and `offline` connection states through an optional constructor callback.
 
 Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 `int64`/`uint64`, non-string map keys, and types implementing

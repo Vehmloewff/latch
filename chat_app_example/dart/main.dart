@@ -22,20 +22,16 @@ String describeEvent(Event event) {
 // the server broadcast events to the correct clients.
 Future<void> main() async {
   // Bob has opened the chat app and connected to the server.
-  final bob = await LatchClient(ClientOptions(serverUrl)).connect();
+  final bob = await LatchClient(ClientOptions(serverUrl),
+      onEvent: (event) =>
+          print('Bob received event: ${describeEvent(event)}')).connect();
   print('Bob connected');
 
   // Alice opens her own independent connection.
-  final alice = await LatchClient(ClientOptions(serverUrl)).connect();
+  final alice = await LatchClient(ClientOptions(serverUrl),
+      onEvent: (event) =>
+          print('Alice received event: ${describeEvent(event)}')).connect();
   print('Alice connected');
-
-  // A real chat UI would update its timeline and member list from this stream.
-  final bobEvents = bob.events.listen((event) {
-    print('Bob received event: ${describeEvent(event)}');
-  });
-  final aliceEvents = alice.events.listen((event) {
-    print('Alice received event: ${describeEvent(event)}');
-  });
 
   try {
     // Bob asks which rooms are available before rendering the room picker.
@@ -66,8 +62,6 @@ Future<void> main() async {
     final history = await bob.chatHistory(HistoryRequest(room: 'general'));
     print('Bob loads history: ${history.messages.length} message(s)');
   } finally {
-    await bobEvents.cancel();
-    await aliceEvents.cancel();
     bob.close();
     alice.close();
     print('Both chat connections closed');

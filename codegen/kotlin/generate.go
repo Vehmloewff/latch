@@ -49,7 +49,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	if !identifier(client) || strings.Contains(client, ".") || isKeyword(client) {
 		return nil, fmt.Errorf("kotlin: invalid client name %q", client)
 	}
-	used := map[string]bool{"LatchBinary": true, "LatchValue": true, "LatchTransport": true, "LatchError": true, "LatchEnvelope": true, "Connected" + client: true, client: true}
+	used := map[string]bool{"LatchBinary": true, "LatchValue": true, "LatchTransport": true, "LatchError": true, "LatchEnvelope": true, "ConnectionState": true, "Connected" + client: true, client: true}
 	for _, n := range typeNames {
 		if !identifier(n) || strings.Contains(n, ".") || isKeyword(n) || used[n] {
 			return nil, fmt.Errorf("kotlin: invalid or conflicting type name %q", n)
@@ -116,10 +116,8 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	for _, t := range sorted {
 		renderType(&b, t, typeNames)
 	}
-	fmt.Fprintf(&b, "\nclass %s(private val url: String) {\n  fun connect(): java.util.concurrent.CompletableFuture<Connected%s> =\n    LatchTransport.connect(url, %q).thenApply { Connected%s(it) }\n}\n", client, client, p.Version, client)
+	fmt.Fprintf(&b, "\nclass %s(private val url: String, private val onEvent: (%s) -> Unit,\n  private val onConnectionStateChange: ((ConnectionState) -> Unit)? = null,\n  private val onEventError: ((Throwable) -> Unit)? = null) {\n  fun connect(): java.util.concurrent.CompletableFuture<Connected%s> =\n    LatchTransport.connect(url, %q, { payload -> onEvent(%s) }, onEventError, onConnectionStateChange).thenApply { Connected%s(it) }\n}\n", client, kotlinType(event, typeNames), client, p.Version, decodeExpr("LatchBinary.decode(payload)", event, typeNames), client)
 	fmt.Fprintf(&b, "\nclass Connected%s internal constructor(private val transport: LatchTransport) : AutoCloseable {\n", client)
-	fmt.Fprintf(&b, "  /** Set to receive decoded events. Callback runs on the WebSocket listener thread. */\n  var onEvent: ((%s) -> Unit)? = null\n    set(value) { field = value; transport.onEvent = if (value == null) null else { payload -> value(%s) } }\n", kotlinType(event, typeNames), decodeExpr("LatchBinary.decode(payload)", event, typeNames))
-	b.WriteString("  /** Called if the connection fails, including on an event decoding/callback error. */\n  var onEventError: ((Throwable) -> Unit)? = null\n    set(value) { field = value; transport.onFailure = value }\n")
 	for _, m := range p.Methods {
 		fmt.Fprintf(&b, "\n  fun %s(request: %s): java.util.concurrent.CompletableFuture<%s> =\n", kotlinID(names.CamelCase(m.Name)), kotlinType(m.RequestType, typeNames), kotlinType(m.ResponseType, typeNames))
 		fmt.Fprintf(&b, "    transport.call(%q, LatchBinary.encode(%s)).thenApply { %s }\n", m.Name, encodeExpr("request", m.RequestType, typeNames), decodeExpr("LatchBinary.decode(it)", m.ResponseType, typeNames))

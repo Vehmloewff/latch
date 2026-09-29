@@ -5,6 +5,8 @@ import {
   ConnectedLatchClient,
   LatchClient,
   LatchError,
+  ConnectionState,
+  type Event,
   __latchWireTypes,
   decodeEnvelope,
   encodeEnvelope,
@@ -52,10 +54,12 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
-function connectWith(socket: FakeWebSocket, url = "ws://fake.test/chat"):
+function connectWith(socket: FakeWebSocket, url = "ws://fake.test/chat", onEvent: (event: Event) => void = () => {}, onConnectionStateChange?: (state: ConnectionState) => void):
   Promise<ConnectedLatchClient> {
   return new LatchClient({
     url,
+    onEvent,
+    onConnectionStateChange,
     webSocketFactory: (actualUrl) => {
       assert.equal(actualUrl, socket.url);
       return socket;
@@ -78,7 +82,9 @@ function requestOn(socket: FakeWebSocket): ReturnType<typeof decodeEnvelope> {
 
 test("connect appends the protocol version and replays an event buffered before setup", async () => {
   const socket = new FakeWebSocket("ws://fake.test/chat?existing=1&version=1");
-  const connecting = connectWith(socket, "ws://fake.test/chat?existing=1");
+  let resolveEvent!: (event: Event) => void;
+  const event = new Promise<Event>((resolve) => { resolveEvent = resolve; });
+  const connecting = connectWith(socket, "ws://fake.test/chat?existing=1", resolveEvent);
   assert.equal(socket.binaryType, "arraybuffer");
 
   socket.open();
@@ -93,8 +99,6 @@ test("connect appends the protocol version and replays an event buffered before 
   }));
 
   const client = await connecting;
-  const event = new Promise<unknown>((resolve) => client.events.subscribe(resolve));
-  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(await event, {
     kind: "presence",
     presence: { room: "general", userId: "bob", online: true },
@@ -164,11 +168,11 @@ test("malformed frames fail pending requests and close the socket", async () => 
 
 test("event dispatch is asynchronous and close fails pending requests", async () => {
   const socket = new FakeWebSocket("ws://fake.test/chat?version=1");
-  const connecting = connectWith(socket);
+  let resolveEvent!: (event: Event) => void;
+  const event = new Promise<Event>((resolve) => { resolveEvent = resolve; });
+  const connecting = connectWith(socket, undefined, (value) => resolveEvent(value));
   socket.open();
   const client = await connecting;
-
-  const event = new Promise<unknown>((resolve) => client.events.subscribe(resolve));
   socket.receive(encodeEnvelope({
     type: "event",
     event: "chat.message",
@@ -191,6 +195,48 @@ test("event dispatch is asynchronous and close fails pending requests", async ()
   });
   assert.equal(client.closed, true);
   assert.deepEqual(socket.closeCalls, [{ code: 1000, reason: "" }]);
+});
+
+test("state transitions on connect, remote close, and reconnect", async () => {
+  const states: ConnectionState[] = [];
+  const first = new FakeWebSocket("ws://fake.test/chat?version=1");
+  const second = new FakeWebSocket("ws://fake.test/chat?version=1");
+  let next = first;
+  const client = new LatchClient({
+    url: "ws://fake.test/chat",
+    onEvent: () => {},
+    onConnectionStateChange: (state) => states.push(state),
+    webSocketFactory: () => next,
+  });
+  const connecting = client.connect();
+  assert.deepEqual(states, [ConnectionState.Connecting]);
+  await assert.rejects(client.connect(), /already connecting or connected/);
+  first.open();
+  await connecting;
+  assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Connected]);
+  await assert.rejects(client.connect(), /already connecting or connected/);
+  first.remoteClose();
+  first.remoteClose();
+  assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline]);
+  next = second;
+  const reconnecting = client.connect();
+  second.open();
+  const connected = await reconnecting;
+  connected.close();
+  assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline,
+    ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline]);
+});
+
+test("state returns offline on setup rejection", async () => {
+  const states: ConnectionState[] = [];
+  const socket = new FakeWebSocket("ws://fake.test/chat?version=1");
+  const client = new LatchClient({ url: "ws://fake.test/chat", onEvent: () => {},
+    onConnectionStateChange: (state) => states.push(state), webSocketFactory: () => socket });
+  const connecting = client.connect();
+  socket.open();
+  socket.receive(encodeEnvelope({ type: "connection_error", error: "denied" }));
+  await assert.rejects(connecting, LatchError);
+  assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Offline]);
 });
 
 test("connect rejects a connection_error that races WebSocket open", async () => {

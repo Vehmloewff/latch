@@ -13,11 +13,13 @@ static class Program
     };
     static async Task Main(string[] args)
     {
-        await using var client = await Bounded(new LatchClient(args.Single()).ConnectAsync());
         var eventReceived = new TaskCompletionSource<Packet>(TaskCreationOptions.RunContinuationsAsynchronously);
         var failure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-        client.OnEvent = packet => eventReceived.TrySetResult(packet);
-        client.OnEventError = error => failure.TrySetResult(error);
+        var states = new List<ConnectionState>();
+        await using var client = await Bounded(new LatchClient(args.Single(),
+            packet => eventReceived.TrySetResult(packet), state => { lock (states) states.Add(state); },
+            error => failure.TrySetResult(error)).ConnectAsync());
+        lock (states) Check(states.SequenceEqual(new[] { ConnectionState.Connecting, ConnectionState.Connected }), "connect states");
         var one = client.ChatSendMessageAsync(Packet("one"));
         var two = client.ChatSendMessageAsync(Packet("two"));
         var evt = await Bounded(eventReceived.Task);
@@ -31,8 +33,13 @@ static class Program
         try { await Bounded(pending); throw new Exception("pending RPC survived close"); }
         catch (LatchError error) { Check(error.Code == "connection_closed", "pending close code"); }
         Check((await Bounded(failure.Task)) is LatchError, "failure callback");
+        lock (states) Check(states.SequenceEqual(new[] { ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline }), "close states");
         try { await Bounded(client.ChatSendMessageAsync(Packet("after close"))); throw new Exception("closed connection sent request"); }
         catch (LatchError error) { Check(error.Code == "connection_closed", "closed call code"); }
+        var failedStates = new List<ConnectionState>();
+        try { await new LatchClient("not a websocket URL", _ => { }, state => failedStates.Add(state)).ConnectAsync(); throw new Exception("invalid URL connected"); }
+        catch (UriFormatException) { }
+        Check(failedStates.SequenceEqual(new[] { ConnectionState.Connecting, ConnectionState.Offline }), "failed connect states");
         Console.WriteLine("C# WebSocket lifecycle passed");
     }
 }

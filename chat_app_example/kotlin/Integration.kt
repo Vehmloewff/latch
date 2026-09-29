@@ -7,15 +7,14 @@ private fun <T> await(future: java.util.concurrent.CompletableFuture<T>): T = fu
 
 fun main() {
   val url = System.getenv("SERVER_URL") ?: error("SERVER_URL is required")
-  val alice = await(LatchClient(url).connect())
-  val bob = await(LatchClient(url).connect())
+  val presence = CountDownLatch(1)
+  val message = CountDownLatch(1)
+  val alice = await(LatchClient(url, { event ->
+    if (event.kind == "presence" && event.presence?.userId == "bob") presence.countDown()
+    if (event.kind == "message" && event.message?.message?.text == "Hello, Kotlin!") message.countDown()
+  }).connect())
+  val bob = await(LatchClient(url, { _ -> }).connect())
   try {
-    val presence = CountDownLatch(1)
-    val message = CountDownLatch(1)
-    alice.onEvent = { event ->
-      if (event.kind == "presence" && event.presence?.userId == "bob") presence.countDown()
-      if (event.kind == "message" && event.message?.message?.text == "Hello, Kotlin!") message.countDown()
-    }
     check(await(alice.chatListRooms(ListRoomsRequest())).rooms.containsAll(listOf("general", "random")))
     check(await(alice.chatJoinRoom(JoinRoomRequest("general", "alice"))).memberIds.contains("alice"))
     check(await(bob.chatJoinRoom(JoinRoomRequest("general", "bob"))).memberIds.contains("alice"))

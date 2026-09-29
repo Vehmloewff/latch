@@ -217,7 +217,7 @@ import (
 )
 
 func TestGeneratedClientRuns(t *testing.T) {
-    client := New("ws://example.invalid")
+    client := New("ws://example.invalid", func(Event) {})
     if client == nil {
         t.Fatal("New returned nil")
     }

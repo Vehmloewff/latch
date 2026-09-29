@@ -34,7 +34,16 @@ export class LatchError extends Error {
   }
 }
 
+export const ConnectionState = {
+  Connecting: "connecting",
+  Offline: "offline",
+  Connected: "connected",
+} as const;
+export type ConnectionState = (typeof ConnectionState)[keyof typeof ConnectionState];
+
 export interface ClientOptions {
+  /** Called whenever the connection changes state. */
+  onConnectionStateChange?: (state: ConnectionState) => void;
   /** The WebSocket URL to connect to, e.g. "wss://example.com/ws". */
   url: string;
   /** Supply a WebSocket implementation for environments with no global
@@ -50,34 +59,13 @@ interface PendingRequest {
   decode: (data: Uint8Array) => unknown;
 }
 
-/** A single typed server-to-client event stream. Listener callbacks are
- * always scheduled as microtasks, so a slow or throwing listener can never
- * block delivery of the next incoming WebSocket message. */
-export class EventStream<T> {
-  private listeners = new Set<(event: T) => void>();
-
-  /** Registers listener and returns a function that unsubscribes it. */
-  subscribe(listener: (event: T) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-
-  /** @internal */
-  _emit(event: T): void {
-    for (const listener of Array.from(this.listeners)) {
-      queueMicrotask(() => listener(event));
-    }
-  }
-}
 
 const connectionClosedError = () => new LatchError("connection_closed", "the connection is closed");
 
 /** Base class for every generated "Connected*Client". Handles the
  * WebSocket message loop, request/response correlation by ID, and
  * dispatch of connection_error / close conditions. Generated subclasses
- * add typed method namespaces (backed by call()) and typed event streams
+ * add typed methods (backed by call()) and event callbacks
  * (backed by dispatchEvent()). */
 export abstract class BaseConnection {
   private ws: WebSocketLike;
@@ -85,7 +73,10 @@ export abstract class BaseConnection {
   private pending = new Map<string, PendingRequest>();
   private _closed = false;
 
-  constructor(handshake: HandshakeResult) {
+  private readonly onClose: () => void;
+
+  constructor(handshake: HandshakeResult, onClose: () => void = () => {}) {
+    this.onClose = onClose;
     this.ws = handshake.ws;
     // Install the real handler before replaying anything, so a message
     // that arrives while we're replaying is still queued in order rather
@@ -96,13 +87,8 @@ export abstract class BaseConnection {
       /* surfaced to callers via rejected/failed pending requests */
     };
     // Events from OnConnect can arrive before this constructor runs. Replay them
-    // in order, deferred with setTimeout (a macrotask) rather than
-    // queueMicrotask: the caller's own code right after awaiting connect()
-    // - most importantly a synchronous events.x.subscribe(...) call - runs
-    // as a microtask continuation of that same await, which would still
-    // run after a microtask queued from inside this constructor but
-    // before a macrotask. Only a macrotask reliably comes after the
-    // caller has had a chance to subscribe.
+    // in order on the next turn, after the generated subclass has initialized
+    // its event callback.
     if (handshake.bufferedMessages.length > 0) {
       const buffered = handshake.bufferedMessages;
       setTimeout(() => {
@@ -152,6 +138,7 @@ export abstract class BaseConnection {
   protected abstract dispatchEvent(env: { event?: string; payload?: Uint8Array }): void;
 
   private handleMessage(data: Uint8Array): void {
+    if (this._closed) return;
     let env: Envelope;
     try {
       env = decodeEnvelope(data);
@@ -215,6 +202,7 @@ export abstract class BaseConnection {
     if (this._closed) return;
     this._closed = true;
     this.failAllPending(connectionClosedError());
+    this.onClose();
   }
 
   private failAllPending(err: Error): void {
@@ -993,15 +981,33 @@ export const __latchWireTypes: WireTypeRegistry = {
 
 
 export class LatchClient {
-  private options: ClientOptions;
+  private options: ClientOptions & { onEvent: (event: Event) => void };
+  private state: ConnectionState = ConnectionState.Offline;
 
-  constructor(options: ClientOptions) {
+  constructor(options: ClientOptions & { onEvent: (event: Event) => void }) {
     this.options = options;
   }
 
+  private setState(state: ConnectionState): void {
+    if (this.state === state) return;
+    this.state = state;
+    this.options.onConnectionStateChange?.(state);
+  }
+
   async connect(): Promise<ConnectedLatchClient> {
-    const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, "1");
-    return new ConnectedLatchClient(handshake);
+    if (this.state !== ConnectionState.Offline) {
+      throw new Error("Latch: client is already connecting or connected");
+    }
+    this.setState(ConnectionState.Connecting);
+    try {
+      const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, "1");
+      const client = new ConnectedLatchClient(handshake, this.options.onEvent, () => this.setState(ConnectionState.Offline));
+      this.setState(ConnectionState.Connected);
+      return client;
+    } catch (error) {
+      this.setState(ConnectionState.Offline);
+      throw error;
+    }
   }
 }
 
@@ -1019,9 +1025,14 @@ export class ConnectedLatchClient extends BaseConnection {
     return this.call<SendMessageResponse>("chat_send_message", req, value => encodeTyped(value, { kind: "named", name: "SendMessageRequest" }, __latchWireTypes), data => decodeTyped(data, { kind: "named", name: "SendMessageResponse" }, __latchWireTypes) as SendMessageResponse);
   }
 
-  readonly events = new EventStream<Event>();
+  private readonly onEvent: (event: Event) => void;
+
+  constructor(handshake: HandshakeResult, onEvent: (event: Event) => void, onClose: () => void) {
+    super(handshake, onClose);
+    this.onEvent = onEvent;
+  }
 
   protected dispatchEvent(env: { payload?: Uint8Array }): void {
-    this.events._emit(decodeTyped(env.payload ?? new Uint8Array(), { kind: "named", name: "Event" }, __latchWireTypes) as Event);
+    this.onEvent(decodeTyped(env.payload ?? new Uint8Array(), { kind: "named", name: "Event" }, __latchWireTypes) as Event);
   }
 }

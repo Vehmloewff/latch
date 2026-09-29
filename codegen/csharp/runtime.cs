@@ -260,6 +260,8 @@ internal sealed class LatchEnvelope
     }
 }
 
+public enum ConnectionState { Connecting, Connected, Offline }
+
 internal sealed class LatchTransport : IAsyncDisposable
 {
     private const int MaxFrame = 1 << 24;
@@ -268,65 +270,50 @@ internal sealed class LatchTransport : IAsyncDisposable
     private readonly System.Threading.SemaphoreSlim _sendLock = new System.Threading.SemaphoreSlim(1, 1);
     private readonly object _gate = new object();
     private readonly Dictionary<string, TaskCompletionSource<byte[]>> _pending = new Dictionary<string, TaskCompletionSource<byte[]>>();
-    private readonly Queue<byte[]> _earlyEvents = new Queue<byte[]>();
-    private Action<byte[]>? _onEvent;
-    private Action<Exception>? _onFailure;
-    private Exception? _failure;
-    private bool _failureNotified;
+    private readonly Action<byte[]> _onEvent;
+    private readonly Action<Exception>? _onFailure;
+    private readonly Action<ConnectionState>? _onStateChange;
     private long _nextID;
     private bool _closed;
 
-    internal Action<byte[]>? OnEvent
+    private LatchTransport(System.Net.WebSockets.ClientWebSocket socket, Action<byte[]> onEvent,
+        Action<Exception>? onFailure, Action<ConnectionState>? onStateChange)
     {
-        get { lock (_gate) return _onEvent; }
-        set
-        {
-            byte[][] queued;
-            lock (_gate)
-            {
-                _onEvent = value;
-                queued = value == null ? Array.Empty<byte[]>() : _earlyEvents.ToArray();
-                if (value != null) _earlyEvents.Clear();
-            }
-            if (value != null) foreach (var payload in queued) DeliverEvent(value, payload);
-        }
+        _socket = socket;
+        _onEvent = onEvent;
+        _onFailure = onFailure;
+        _onStateChange = onStateChange;
     }
-    internal Action<Exception>? OnFailure
-    {
-        get { lock (_gate) return _onFailure; }
-        set
-        {
-            Exception? failure;
-            lock (_gate)
-            {
-                _onFailure = value;
-                failure = value != null && !_failureNotified ? _failure : null;
-                if (failure != null) _failureNotified = true;
-            }
-            if (value != null && failure != null)
-                try { value(failure); } catch (Exception) { /* The connection is already closed. */ }
-        }
-    }
-    private LatchTransport(System.Net.WebSockets.ClientWebSocket socket) => _socket = socket;
 
-    internal static async Task<LatchTransport> ConnectAsync(string url, string version)
+    internal static async Task<LatchTransport> ConnectAsync(string url, string version, Action<byte[]> onEvent,
+        Action<Exception>? onFailure, Action<ConnectionState>? onStateChange)
     {
-        var target = new UriBuilder(url);
-        if (target.Scheme != "ws" && target.Scheme != "wss")
-            throw new ArgumentException("Latch URL must use ws or wss", nameof(url));
-        // Preserve unrelated query parameters while replacing any existing version.
-        var parts = target.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(part => Uri.UnescapeDataString(part.Split('=')[0].Replace("+", " ")) != "version");
-        target.Query = string.Join("&", parts.Append("version=" + Uri.EscapeDataString(version)));
-        var socket = new System.Net.WebSockets.ClientWebSocket();
+        onStateChange?.Invoke(ConnectionState.Connecting);
         try
         {
-            await socket.ConnectAsync(target.Uri, System.Threading.CancellationToken.None).ConfigureAwait(false);
-            var transport = new LatchTransport(socket);
-            _ = transport.ReadLoopAsync();
-            return transport;
+            var target = new UriBuilder(url);
+            if (target.Scheme != "ws" && target.Scheme != "wss")
+                throw new ArgumentException("Latch URL must use ws or wss", nameof(url));
+            // Preserve unrelated query parameters while replacing any existing version.
+            var parts = target.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => Uri.UnescapeDataString(part.Split('=')[0].Replace("+", " ")) != "version");
+            target.Query = string.Join("&", parts.Append("version=" + Uri.EscapeDataString(version)));
+            var socket = new System.Net.WebSockets.ClientWebSocket();
+            try
+            {
+                await socket.ConnectAsync(target.Uri, System.Threading.CancellationToken.None).ConfigureAwait(false);
+                var transport = new LatchTransport(socket, onEvent, onFailure, onStateChange);
+                onStateChange?.Invoke(ConnectionState.Connected);
+                _ = transport.ReadLoopAsync();
+                return transport;
+            }
+            catch { socket.Dispose(); throw; }
         }
-        catch { socket.Dispose(); throw; }
+        catch
+        {
+            try { onStateChange?.Invoke(ConnectionState.Offline); } catch { }
+            throw;
+        }
     }
 
     internal async Task<byte[]> CallAsync(string method, byte[] payload)
@@ -405,14 +392,8 @@ internal sealed class LatchTransport : IAsyncDisposable
                 else waiter?.TrySetException(new LatchError(envelope.Code, envelope.Error));
                 break;
             case 6:
-                Action<byte[]>? handler;
-                lock (_gate)
-                {
-                    if (_closed) return;
-                    handler = _onEvent;
-                    if (handler == null) _earlyEvents.Enqueue(envelope.Payload);
-                }
-                if (handler != null) DeliverEvent(handler, envelope.Payload);
+                lock (_gate) { if (_closed) return; }
+                DeliverEvent(_onEvent, envelope.Payload);
                 break;
             case 7: Fail(new LatchError(envelope.Code, envelope.Error)); break;
             default: Fail(new FormatException("Unexpected Latch envelope kind")); break;
@@ -421,22 +402,18 @@ internal sealed class LatchTransport : IAsyncDisposable
     private void Fail(Exception error)
     {
         TaskCompletionSource<byte[]>[] pending;
-        Action<Exception>? handler;
         lock (_gate)
         {
             if (_closed) return;
             _closed = true;
-            _failure = error;
             pending = _pending.Values.ToArray();
             _pending.Clear();
-            _earlyEvents.Clear();
-            handler = _onFailure;
-            _failureNotified = handler != null;
         }
         _stop.Cancel();
         _socket.Abort();
         foreach (var waiter in pending) waiter.TrySetException(error);
-        try { handler?.Invoke(error); } catch (Exception) { /* A failed callback cannot revive the connection. */ }
+        try { _onStateChange?.Invoke(ConnectionState.Offline); } catch (Exception) { /* The connection is already closed. */ }
+        try { _onFailure?.Invoke(error); } catch (Exception) { /* A failed callback cannot revive the connection. */ }
     }
     public ValueTask DisposeAsync()
     {

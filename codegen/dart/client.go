@@ -208,18 +208,23 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 	b.WriteString("import 'runtime.dart';\n\n")
 
 	fmt.Fprintf(&b, "class %s {\n", clientName)
-	b.WriteString("  final ClientOptions options;\n\n")
-	fmt.Fprintf(&b, "  %s(this.options);\n\n", clientName)
+	b.WriteString("  final ClientOptions options;\n")
+	fmt.Fprintf(&b, "  final void Function(%s) onEvent;\n", payloadType)
+	b.WriteString("  final void Function(ConnectionState)? onConnectionStateChange;\n")
+	b.WriteString("  ConnectionState _state = ConnectionState.offline;\n\n")
+	fmt.Fprintf(&b, "  %s(this.options, {required this.onEvent, this.onConnectionStateChange});\n\n", clientName)
+	b.WriteString("  void _setState(ConnectionState state) {\n    if (_state == state) return;\n    _state = state;\n    onConnectionStateChange?.call(state);\n  }\n\n")
 	fmt.Fprintf(&b, "  Future<%s> connect() async {\n", connectedName)
-	fmt.Fprintf(&b, "    final handshake = await connectSocket(options.url, %q);\n", p.Version)
-	fmt.Fprintf(&b, "    return %s(handshake);\n", connectedName)
+	b.WriteString("    if (_state != ConnectionState.offline) {\n      throw StateError('Latch: client is already connecting or connected');\n    }\n    _setState(ConnectionState.connecting);\n    try {\n")
+	fmt.Fprintf(&b, "      final handshake = await connectSocket(options.url, %q);\n", p.Version)
+	fmt.Fprintf(&b, "      final client = %s(handshake, onEvent, () => _setState(ConnectionState.offline));\n", connectedName)
+	b.WriteString("      _setState(ConnectionState.connected);\n      return client;\n    } catch (_) {\n      _setState(ConnectionState.offline);\n      rethrow;\n    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(&b, "class %s extends BaseConnection {\n", connectedName)
-	fmt.Fprintf(&b, "  final StreamController<%s> _eventsController = StreamController<%s>.broadcast();\n", payloadType, payloadType)
-	fmt.Fprintf(&b, "  Stream<%s> get events => _eventsController.stream;\n\n", payloadType)
-	fmt.Fprintf(&b, "  %s(HandshakeResult handshake) : super(handshake);\n\n", connectedName)
+	fmt.Fprintf(&b, "  final void Function(%s) onEvent;\n\n", payloadType)
+	fmt.Fprintf(&b, "  %s(HandshakeResult handshake, this.onEvent, void Function() onClose) : super(handshake, onClose);\n\n", connectedName)
 	for _, m := range p.Methods {
 		respType := dartType(m.ResponseType, typeNames)
 		reqType := dartType(m.RequestType, typeNames)
@@ -230,7 +235,7 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 		b.WriteString("      );\n\n")
 	}
 	b.WriteString("  @override\n")
-	fmt.Fprintf(&b, "  void dispatchEvent(dynamic payload) {\n    _eventsController.add(%s);\n  }\n", decodeExpr("payload", eventRef, typeNames))
+	fmt.Fprintf(&b, "  void dispatchEvent(dynamic payload) {\n    onEvent(%s);\n  }\n", decodeExpr("payload", eventRef, typeNames))
 	b.WriteString("}\n\n")
 	return b.String(), nil
 }

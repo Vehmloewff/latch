@@ -41,16 +41,50 @@ final class LatchClientTests: XCTestCase {
         }
     }
 
+    func testFailedConnectReportsOffline() async {
+        var continuation: AsyncStream<ConnectionState>.Continuation!
+        let stream = AsyncStream<ConnectionState> { continuation = $0 }
+        let sink = continuation!
+        let client = LatchClient(
+            url: URL(string: "ws://127.0.0.1:1")!,
+            onEvent: { _ in },
+            onConnectionStateChange: { sink.yield($0) }
+        )
+        do {
+            _ = try await client.connect()
+            XCTFail("expected connection failure")
+        } catch {
+            var states = stream.makeAsyncIterator()
+            let connecting = await states.next()
+            let offline = await states.next()
+            XCTAssertEqual(connecting, .connecting)
+            XCTAssertEqual(offline, .offline)
+        }
+    }
+
     func testRPCEventsAndErrorsAgainstGoServer() async throws {
         guard let rawURL = ProcessInfo.processInfo.environment["SERVER_URL"],
               let url = URL(string: rawURL) else {
             throw XCTSkip("SERVER_URL is only configured by the cross-language integration runner")
         }
 
-        let connection = try await LatchClient(url: url).connect()
+        var eventContinuation: AsyncStream<Event>.Continuation!
+        let eventStream = AsyncStream<Event> { eventContinuation = $0 }
+        var stateContinuation: AsyncStream<ConnectionState>.Continuation!
+        let stateStream = AsyncStream<ConnectionState> { stateContinuation = $0 }
+        let eventSink = eventContinuation!
+        let stateSink = stateContinuation!
+        let connection = try await LatchClient(
+            url: url,
+            onEvent: { eventSink.yield($0) },
+            onConnectionStateChange: { stateSink.yield($0) }
+        ).connect()
         defer { Task { await connection.close() } }
-
-        let eventStream = connection.events
+        var states = stateStream.makeAsyncIterator()
+        let connecting = await states.next()
+        XCTAssertEqual(connecting, .connecting)
+        let connected = await states.next()
+        XCTAssertEqual(connected, .connected)
         let presenceTask = Task { try await nextEvent(eventStream, matching: "presence") }
         let joined = try await connection.chatJoinRoom(
             JoinRoomRequest(room: "general", userId: "swift-user")
@@ -87,6 +121,8 @@ final class LatchClientTests: XCTestCase {
         }
 
         await connection.close()
+        let offline = await states.next()
+        XCTAssertEqual(offline, .offline)
         do {
             _ = try await connection.chatListRooms(ListRoomsRequest())
             XCTFail("RPC after close should fail")

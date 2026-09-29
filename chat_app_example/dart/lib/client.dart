@@ -27,6 +27,8 @@ class LatchDecodeException implements Exception {
   String toString() => 'LatchDecodeException: $message';
 }
 
+enum ConnectionState { connecting, offline, connected }
+
 class ClientOptions {
   final Uri url;
 
@@ -128,8 +130,9 @@ abstract class BaseConnection {
   int _nextId = 1;
   final Map<String, _PendingRequest> _pending = {};
   bool _closed = false;
+  final void Function() _onClose;
 
-  BaseConnection(HandshakeResult handshake)
+  BaseConnection(HandshakeResult handshake, this._onClose)
       : _channel = handshake.channel,
         _subscription = handshake.subscription {
     _subscription
@@ -185,6 +188,7 @@ abstract class BaseConnection {
   void dispatchEvent(Object? payload);
 
   void _handleMessage(dynamic data) {
+    if (_closed) return;
     late final BinaryEnvelope env;
     try {
       env = BinaryEnvelope.decode(_messageBytes(data));
@@ -245,6 +249,7 @@ abstract class BaseConnection {
     if (_closed) return;
     _closed = true;
     _failAllPending(LatchError('connection_closed', 'the connection is closed'));
+    _onClose();
   }
 
   void _failAllPending(LatchError err) {
@@ -999,20 +1004,39 @@ class SendMessageResponse {
 
 class LatchClient {
   final ClientOptions options;
+  final void Function(Event) onEvent;
+  final void Function(ConnectionState)? onConnectionStateChange;
+  ConnectionState _state = ConnectionState.offline;
 
-  LatchClient(this.options);
+  LatchClient(this.options, {required this.onEvent, this.onConnectionStateChange});
+
+  void _setState(ConnectionState state) {
+    if (_state == state) return;
+    _state = state;
+    onConnectionStateChange?.call(state);
+  }
 
   Future<ConnectedLatchClient> connect() async {
-    final handshake = await connectSocket(options.url, "1");
-    return ConnectedLatchClient(handshake);
+    if (_state != ConnectionState.offline) {
+      throw StateError('Latch: client is already connecting or connected');
+    }
+    _setState(ConnectionState.connecting);
+    try {
+      final handshake = await connectSocket(options.url, "1");
+      final client = ConnectedLatchClient(handshake, onEvent, () => _setState(ConnectionState.offline));
+      _setState(ConnectionState.connected);
+      return client;
+    } catch (_) {
+      _setState(ConnectionState.offline);
+      rethrow;
+    }
   }
 }
 
 class ConnectedLatchClient extends BaseConnection {
-  final StreamController<Event> _eventsController = StreamController<Event>.broadcast();
-  Stream<Event> get events => _eventsController.stream;
+  final void Function(Event) onEvent;
 
-  ConnectedLatchClient(HandshakeResult handshake) : super(handshake);
+  ConnectedLatchClient(HandshakeResult handshake, this.onEvent, void Function() onClose) : super(handshake, onClose);
 
   Future<HistoryResponse> chatHistory(HistoryRequest req) => call(
         "chat_history",
@@ -1040,7 +1064,7 @@ class ConnectedLatchClient extends BaseConnection {
 
   @override
   void dispatchEvent(dynamic payload) {
-    _eventsController.add(Event.fromBinary(payload));
+    onEvent(Event.fromBinary(payload));
   }
 }
 

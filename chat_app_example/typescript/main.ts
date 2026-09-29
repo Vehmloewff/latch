@@ -1,12 +1,12 @@
-import { LatchClient, type Event } from "./client.ts";
+import { LatchClient } from "./client.ts";
 
 const url = process.env.SERVER_URL ?? "ws://127.0.0.1:8080/ws";
 
 // Story: Bob has opened a chat app, and Alice is already chatting in the same
 // room. We keep two connections to make the server-to-client event fan-out
 // visible in one small walkthrough.
-const bobClient = new LatchClient({ url });
-const aliceClient = new LatchClient({ url });
+const bobClient = new LatchClient({ url, onEvent: (event) => console.log("Bob received event:", event) });
+const aliceClient = new LatchClient({ url, onEvent: (event) => console.log("Alice received event:", event) });
 
 // Bob has opened the chat app and connected to the server.
 const bob = await bobClient.connect();
@@ -16,12 +16,6 @@ console.log("Bob connected");
 const alice = await aliceClient.connect();
 console.log("Alice connected");
 
-function logEvents(name: string, events: { subscribe(listener: (event: Event) => void): () => void }): () => void {
-  return events.subscribe((event) => console.log(`${name} received event:`, event));
-}
-
-const stopBobEvents = logEvents("Bob", bob.events);
-const stopAliceEvents = logEvents("Alice", alice.events);
 
 try {
   // Bob asks the server for rooms so the chat app can render its room picker.
@@ -45,8 +39,7 @@ try {
   // on events that may have arrived before his UI was ready.
   console.log("Bob loads history:", await bob.chatHistory({ room: "general" }));
 } finally {
-  stopBobEvents();
-  stopAliceEvents();
+
   bob.close();
   alice.close();
   console.log("Both chat connections closed");

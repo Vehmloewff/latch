@@ -61,20 +61,10 @@ func renderClientFields(p *protocol.Protocol, typeNames map[string]string) strin
 	return b.String()
 }
 
-// renderEventsField creates the one typed event stream on the generated
-// connected client.
-func renderEventsField(p *protocol.Protocol, typeNames map[string]string) (string, error) {
-	ref, ok := p.EventRef()
-	if !ok {
-		return "", fmt.Errorf("protocol has no event type")
-	}
-	return fmt.Sprintf("  readonly events = new EventStream<%s>();\n", tsType(ref, typeNames)), nil
-}
-
 func renderDispatchEvent(eventType, eventTypeWireType string) string {
 	var b strings.Builder
 	b.WriteString("  protected dispatchEvent(env: { payload?: Uint8Array }): void {\n")
-	fmt.Fprintf(&b, "    this.events._emit(decodeTyped(env.payload ?? new Uint8Array(), %s, __latchWireTypes) as %s);\n", eventTypeWireType, eventType)
+	fmt.Fprintf(&b, "    this.onEvent(decodeTyped(env.payload ?? new Uint8Array(), %s, __latchWireTypes) as %s);\n", eventTypeWireType, eventType)
 	b.WriteString("  }\n")
 	return b.String()
 }
@@ -83,11 +73,11 @@ func renderDispatchEvent(eventType, eventTypeWireType string) string {
 // a typed connect()) and "Connected<Name>Client" (the typed RPC/event
 // surface) classes.
 func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[string]string) (string, error) {
-	eventsField, err := renderEventsField(p, typeNames)
-	if err != nil {
-		return "", err
+	eventRef, ok := p.EventRef()
+	if !ok {
+		return "", fmt.Errorf("protocol has no event type")
 	}
-	eventRef, _ := p.EventRef()
+	eventType := tsType(eventRef, typeNames)
 
 	connectedName := "Connected" + clientName
 
@@ -97,23 +87,27 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 	if len(typeImports) > 0 {
 		b.WriteString(fmt.Sprintf("import type { %s } from \"./types\";\n", strings.Join(typeImports, ", ")))
 	}
-	b.WriteString("import { BaseConnection, type ClientOptions, EventStream, connectSocket } from \"./runtime\";\n\n")
+	b.WriteString("import { BaseConnection, type ClientOptions, connectSocket } from \"./runtime\";\n\n")
 
 	fmt.Fprintf(&b, "export class %s {\n", clientName)
-	b.WriteString("  private options: ClientOptions;\n\n")
-	b.WriteString("  constructor(options: ClientOptions) {\n    this.options = options;\n  }\n\n")
+	fmt.Fprintf(&b, "  private options: ClientOptions & { onEvent: (event: %s) => void };\n", eventType)
+	b.WriteString("  private state: ConnectionState = ConnectionState.Offline;\n\n")
+	fmt.Fprintf(&b, "  constructor(options: ClientOptions & { onEvent: (event: %s) => void }) {\n    this.options = options;\n  }\n\n", eventType)
+	b.WriteString("  private setState(state: ConnectionState): void {\n    if (this.state === state) return;\n    this.state = state;\n    this.options.onConnectionStateChange?.(state);\n  }\n\n")
 	fmt.Fprintf(&b, "  async connect(): Promise<%s> {\n", connectedName)
-	fmt.Fprintf(&b, "    const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, %q);\n", p.Version)
-	fmt.Fprintf(&b, "    return new %s(handshake);\n", connectedName)
+	b.WriteString("    if (this.state !== ConnectionState.Offline) {\n      throw new Error(\"Latch: client is already connecting or connected\");\n    }\n    this.setState(ConnectionState.Connecting);\n    try {\n")
+	fmt.Fprintf(&b, "      const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, %q);\n", p.Version)
+	fmt.Fprintf(&b, "      const client = new %s(handshake, this.options.onEvent, () => this.setState(ConnectionState.Offline));\n", connectedName)
+	b.WriteString("      this.setState(ConnectionState.Connected);\n      return client;\n    } catch (error) {\n      this.setState(ConnectionState.Offline);\n      throw error;\n    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(&b, "export class %s extends BaseConnection {\n", connectedName)
 	b.WriteString(renderClientFields(p, typeNames))
 	b.WriteString("\n")
-	b.WriteString(eventsField)
-	b.WriteString("\n")
-	b.WriteString(renderDispatchEvent(tsType(eventRef, typeNames), wireTypeExpr(eventRef, typeNames)))
+	fmt.Fprintf(&b, "  private readonly onEvent: (event: %s) => void;\n\n", eventType)
+	fmt.Fprintf(&b, "  constructor(handshake: HandshakeResult, onEvent: (event: %s) => void, onClose: () => void) {\n    super(handshake, onClose);\n    this.onEvent = onEvent;\n  }\n\n", eventType)
+	b.WriteString(renderDispatchEvent(eventType, wireTypeExpr(eventRef, typeNames)))
 	b.WriteString("}\n")
 
 	return b.String(), nil

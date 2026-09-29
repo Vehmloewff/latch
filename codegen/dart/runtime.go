@@ -34,6 +34,8 @@ class LatchDecodeException implements Exception {
   String toString() => 'LatchDecodeException: $message';
 }
 
+enum ConnectionState { connecting, offline, connected }
+
 class ClientOptions {
   final Uri url;
 
@@ -135,8 +137,9 @@ abstract class BaseConnection {
   int _nextId = 1;
   final Map<String, _PendingRequest> _pending = {};
   bool _closed = false;
+  final void Function() _onClose;
 
-  BaseConnection(HandshakeResult handshake)
+  BaseConnection(HandshakeResult handshake, this._onClose)
       : _channel = handshake.channel,
         _subscription = handshake.subscription {
     _subscription
@@ -192,6 +195,7 @@ abstract class BaseConnection {
   void dispatchEvent(Object? payload);
 
   void _handleMessage(dynamic data) {
+    if (_closed) return;
     late final BinaryEnvelope env;
     try {
       env = BinaryEnvelope.decode(_messageBytes(data));
@@ -252,6 +256,7 @@ abstract class BaseConnection {
     if (_closed) return;
     _closed = true;
     _failAllPending(LatchError('connection_closed', 'the connection is closed'));
+    _onClose();
   }
 
   void _failAllPending(LatchError err) {

@@ -139,7 +139,13 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		`func (c *ConnectedLatchClient) Get(ctx context.Context, req GetInvoiceRequest)`,
 		`client.Call[GetInvoiceResponse](ctx, c.conn, "billing.invoice.get", req)`,
 		`client.Call[UserGetResponse](ctx, c.conn, "user.get", req)`,
+		`func New(url string, onEvent func(InvoiceUpdated), onConnectionStateChange ...func(ConnectionState))`,
+		`ConnectionStateConnecting ConnectionState = "connecting"`,
+		`ConnectionStateOffline`,
+		`ConnectionStateConnected`,
 		`client.RegisterEvent[InvoiceUpdated](conn)`,
+		`c.onEvent(event)`,
+		`c.onConnectionStateChange(ConnectionStateOffline)`,
 		`func (c *ConnectedLatchClient) Close() error {`,
 	}
 	for _, want := range wantClientSnippets {

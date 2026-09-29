@@ -163,16 +163,19 @@ internal data class LatchEnvelope(
   }
 }
 
-internal class LatchTransport private constructor(private val socket: WebSocket) : AutoCloseable {
+enum class ConnectionState { CONNECTING, CONNECTED, OFFLINE }
+
+internal class LatchTransport private constructor(
+  private val socket: WebSocket,
+  private val onEvent: (ByteArray) -> Unit,
+  private val onFailure: ((Throwable) -> Unit)?,
+  private val onStateChange: ((ConnectionState) -> Unit)?
+) : AutoCloseable {
   private val closed = AtomicBoolean(false)
   private val nextId = AtomicLong(1)
   private val lock = Any()
   private val pending = linkedMapOf<String, CompletableFuture<ByteArray>>()
   private var sending: CompletableFuture<*> = CompletableFuture.completedFuture(Unit)
-  private val earlyEvents = ArrayDeque<ByteArray>()
-  var onEvent: ((ByteArray) -> Unit)? = null
-    set(value) { synchronized(lock) { field = value; if (value != null) while (earlyEvents.isNotEmpty()) deliverEvent(value, earlyEvents.removeFirst()) } }
-  var onFailure: ((Throwable) -> Unit)? = null
 
   fun call(method: String, payload: ByteArray): CompletableFuture<ByteArray> {
     val result = CompletableFuture<ByteArray>()
@@ -196,7 +199,7 @@ internal class LatchTransport private constructor(private val socket: WebSocket)
     when (env.kind) {
       4 -> synchronized(lock) { pending.remove(env.id) }?.complete(env.payload)
       5 -> synchronized(lock) { pending.remove(env.id) }?.completeExceptionally(LatchError(env.code, env.error))
-      6 -> synchronized(lock) { val receiver = onEvent; if (receiver == null) earlyEvents.addLast(env.payload) else deliverEvent(receiver, env.payload) }
+      6 -> synchronized(lock) { if (!closed.get()) deliverEvent(onEvent, env.payload) }
       7 -> fail(LatchError(env.code, env.error))
       else -> fail(LatchError("malformed_frame", "unexpected envelope kind"))
     }
@@ -205,28 +208,43 @@ internal class LatchTransport private constructor(private val socket: WebSocket)
   private fun terminate(error: Throwable, abort: Boolean) {
     val waiters = synchronized(lock) {
       if (!closed.compareAndSet(false, true)) return
-      earlyEvents.clear()
       pending.values.toList().also { pending.clear() }
     }
     waiters.forEach { it.completeExceptionally(error) }
+    try { onStateChange?.invoke(ConnectionState.OFFLINE) } catch (_: Throwable) { /* The connection is already closed. */ }
     try { onFailure?.invoke(error) } catch (_: Throwable) { /* The connection is already failed. */ }
     if (abort) socket.abort()
     else try { socket.sendClose(WebSocket.NORMAL_CLOSURE, "").whenComplete { _, err -> if (err != null) socket.abort() } } catch (_: Throwable) { socket.abort() }
   }
   override fun close() { terminate(LatchError("connection_closed", "connection closed"), false) }
   companion object {
-    fun connect(url: String, version: String): CompletableFuture<LatchTransport> {
+    fun connect(url: String, version: String, onEvent: (ByteArray) -> Unit,
+      onFailure: ((Throwable) -> Unit)?, onStateChange: ((ConnectionState) -> Unit)?): CompletableFuture<LatchTransport> {
       val result = CompletableFuture<LatchTransport>()
+      try { onStateChange?.invoke(ConnectionState.CONNECTING) }
+      catch (e: Throwable) { return CompletableFuture.failedFuture(e) }
       val uri = try {
         val u = URI(url)
         val query = listOfNotNull(u.rawQuery?.split("&")?.filter { it.substringBefore("=") != "version" }?.joinToString("&")?.takeIf { it.isNotEmpty() }, "version=" + java.net.URLEncoder.encode(version, "UTF-8")).joinToString("&")
         URI.create(u.scheme + "://" + u.rawAuthority + (u.rawPath ?: "") + "?" + query + (u.rawFragment?.let { "#$it" } ?: ""))
-      } catch (e: Exception) { return CompletableFuture.failedFuture(e) }
+      } catch (e: Exception) {
+        try { onStateChange?.invoke(ConnectionState.OFFLINE) } catch (_: Throwable) { }
+        return CompletableFuture.failedFuture(e)
+      }
+      fun failBeforeOpen(error: Throwable) {
+        if (result.completeExceptionally(error)) try { onStateChange?.invoke(ConnectionState.OFFLINE) } catch (_: Throwable) { }
+      }
       val listener = object : WebSocket.Listener {
         private var transport: LatchTransport? = null
         fun transport(): LatchTransport = transport ?: throw LatchError("connection_closed", "WebSocket did not open")
         private val fragments = ByteArrayOutputStream()
-        override fun onOpen(ws: WebSocket) { transport = LatchTransport(ws); ws.request(1) }
+        override fun onOpen(ws: WebSocket) {
+          val connection = LatchTransport(ws, onEvent, onFailure, onStateChange)
+          transport = connection
+          if (result.isDone) { connection.fail(LatchError("connection_closed", "connection closed")); return }
+          try { onStateChange?.invoke(ConnectionState.CONNECTED); ws.request(1) }
+          catch (e: Throwable) { result.completeExceptionally(e); connection.fail(e) }
+        }
         override fun onBinary(ws: WebSocket, data: ByteBuffer, last: Boolean): CompletableFuture<*>? {
           try {
             val bytes = ByteArray(data.remaining()); data.get(bytes); fragments.write(bytes)
@@ -234,26 +252,37 @@ internal class LatchTransport private constructor(private val socket: WebSocket)
               val env = LatchEnvelope.decode(fragments.toByteArray()); fragments.reset()
               transport?.dispatch(env)
             }
-          } catch (e: Throwable) { if (!result.isDone) result.completeExceptionally(e); transport?.fail(e) }
+          } catch (e: Throwable) { if (transport == null) failBeforeOpen(e) else { result.completeExceptionally(e); transport?.fail(e) } }
           ws.request(1)
           return null
         }
         override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): CompletableFuture<*>? {
           val error = LatchError("malformed_frame", "text frame received")
-          if (!result.isDone) result.completeExceptionally(error)
-          transport?.fail(error); return null
+          if (transport == null) failBeforeOpen(error) else { result.completeExceptionally(error); transport?.fail(error) }
+          return null
         }
-        override fun onError(ws: WebSocket, error: Throwable) { if (!result.isDone) result.completeExceptionally(error); transport?.fail(error) }
+        override fun onError(ws: WebSocket, error: Throwable) {
+          if (transport == null) failBeforeOpen(error) else { result.completeExceptionally(error); transport?.fail(error) }
+        }
         override fun onClose(ws: WebSocket, statusCode: Int, reason: String): CompletableFuture<*>? {
           val error = LatchError("connection_closed", "connection closed: $statusCode $reason")
-          if (!result.isDone) result.completeExceptionally(error)
-          transport?.fail(error); return null
+          if (transport == null) failBeforeOpen(error) else { result.completeExceptionally(error); transport?.fail(error) }
+          return null
         }
       }
-      HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(uri, listener).whenComplete { _, err ->
-        if (err != null) result.completeExceptionally(err)
-        else if (!result.isDone) result.complete(listener.transport())
-      }
+      try {
+        HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(uri, listener).whenComplete { _, err ->
+          if (err != null) {
+            val transport = try { listener.transport() } catch (_: Throwable) { null }
+            if (transport == null) failBeforeOpen(err)
+            else { result.completeExceptionally(err); transport.fail(err) }
+          } else if (!result.isDone) {
+            val transport = listener.transport()
+            if (!transport.closed.get()) result.complete(transport)
+            else result.completeExceptionally(LatchError("connection_closed", "connection closed"))
+          }
+        }
+      } catch (e: Throwable) { failBeforeOpen(e) }
       return result
     }
   }
@@ -495,18 +524,14 @@ class SendMessageResponse(
   }
 }
 
-class LatchClient(private val url: String) {
+class LatchClient(private val url: String, private val onEvent: (Event) -> Unit,
+  private val onConnectionStateChange: ((ConnectionState) -> Unit)? = null,
+  private val onEventError: ((Throwable) -> Unit)? = null) {
   fun connect(): java.util.concurrent.CompletableFuture<ConnectedLatchClient> =
-    LatchTransport.connect(url, "1").thenApply { ConnectedLatchClient(it) }
+    LatchTransport.connect(url, "1", { payload -> onEvent(Event.fromLatch(LatchBinary.decode(payload))) }, onEventError, onConnectionStateChange).thenApply { ConnectedLatchClient(it) }
 }
 
 class ConnectedLatchClient internal constructor(private val transport: LatchTransport) : AutoCloseable {
-  /** Set to receive decoded events. Callback runs on the WebSocket listener thread. */
-  var onEvent: ((Event) -> Unit)? = null
-    set(value) { field = value; transport.onEvent = if (value == null) null else { payload -> value(Event.fromLatch(LatchBinary.decode(payload))) } }
-  /** Called if the connection fails, including on an event decoding/callback error. */
-  var onEventError: ((Throwable) -> Unit)? = null
-    set(value) { field = value; transport.onFailure = value }
 
   fun chatHistory(request: HistoryRequest): java.util.concurrent.CompletableFuture<HistoryResponse> =
     transport.call("chat_history", LatchBinary.encode(request.toLatch())).thenApply { HistoryResponse.fromLatch(LatchBinary.decode(it)) }

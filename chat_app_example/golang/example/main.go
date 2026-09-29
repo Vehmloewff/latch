@@ -20,8 +20,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Callbacks are installed before either connection starts receiving events.
+	bobEvents := make(chan chat.Event, 8)
+	aliceEvents := make(chan chat.Event, 8)
 	// Bob has opened the chat app and connected to the server.
-	bob, err := chat.New(url).Connect(ctx)
+	bob, err := chat.New(url, func(event chat.Event) { bobEvents <- event }).Connect(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -29,7 +32,7 @@ func main() {
 
 	// Alice opens her own connection; a real UI would keep this connection
 	// alongside Bob's connection in a separate session or process.
-	alice, err := chat.New(url).Connect(ctx)
+	alice, err := chat.New(url, func(event chat.Event) { aliceEvents <- event }).Connect(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -46,14 +49,14 @@ func main() {
 	if _, err := bob.ChatJoinRoom(ctx, chat.JoinRoomRequest{Room: "general", UserID: "bob"}); err != nil {
 		panic(err)
 	}
-	fmt.Println("Bob joined #general:", describeEvent(nextEvent(bob.Events())))
+	fmt.Println("Bob joined #general:", describeEvent(nextEvent(bobEvents)))
 
 	// Alice joins the same room from her separate connection.
 	if _, err := alice.ChatJoinRoom(ctx, chat.JoinRoomRequest{Room: "general", UserID: "alice"}); err != nil {
 		panic(err)
 	}
-	fmt.Println("Bob sees Alice join:", describeEvent(nextEvent(bob.Events())))
-	fmt.Println("Alice sees her presence:", describeEvent(nextEvent(alice.Events())))
+	fmt.Println("Bob sees Alice join:", describeEvent(nextEvent(bobEvents)))
+	fmt.Println("Alice sees her presence:", describeEvent(nextEvent(aliceEvents)))
 
 	// Alice sends a message. The request resolves for Alice and the server emits
 	// the resulting message event to both Alice and Bob.
@@ -64,8 +67,8 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("Alice sent:", sent.Message.Text)
-	fmt.Println("Alice receives message event:", describeEvent(nextEvent(alice.Events())))
-	fmt.Println("Bob receives message event:", describeEvent(nextEvent(bob.Events())))
+	fmt.Println("Alice receives message event:", describeEvent(nextEvent(aliceEvents)))
+	fmt.Println("Bob receives message event:", describeEvent(nextEvent(bobEvents)))
 
 	// Bob can restore the conversation without relying on events that arrived
 	// before his UI mounted by asking for the room history.

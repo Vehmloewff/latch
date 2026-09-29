@@ -73,10 +73,13 @@ class FakeWebSocketChannel with StreamChannelMixin implements WebSocketChannel {
 }
 
 Future<ConnectedLatchClient> connectedFakeClient(
-  FakeWebSocketChannel channel,
-) async {
+  FakeWebSocketChannel channel, {
+  void Function(Event)? onEvent,
+  void Function()? onClose,
+}) async {
   final subscription = channel.stream.listen(null);
-  return ConnectedLatchClient(HandshakeResult(channel, subscription, []));
+  return ConnectedLatchClient(HandshakeResult(channel, subscription, []),
+      onEvent ?? (_) {}, onClose ?? () {});
 }
 
 Future<void> expectLatchError(Future<dynamic> future, String code) async {
@@ -115,15 +118,30 @@ void main() {
       ).encode());
     }();
 
-    final client = await LatchClient(ClientOptions(Uri.parse(
-      'ws://127.0.0.1:${server.port}/chat?existing=yes',
-    ))).connect();
-    final event = await client.events.first;
+    final eventFuture = Completer<Event>();
+    final states = <ConnectionState>[];
+    final latch = LatchClient(
+        ClientOptions(Uri.parse(
+          'ws://127.0.0.1:${server.port}/chat?existing=yes',
+        )),
+        onEvent: eventFuture.complete,
+        onConnectionStateChange: states.add);
+    final connecting = latch.connect();
+    expect(states, [ConnectionState.connecting]);
+    final client = await connecting;
+    expect(states, [ConnectionState.connecting, ConnectionState.connected]);
+    final event = await eventFuture.future;
     expect(event.kind, 'presence');
     expect(event.presence!.room, 'general');
     expect(event.presence!.userId, 'bob');
     expect(event.presence!.online, isTrue);
     client.close();
+    client.close();
+    expect(states, [
+      ConnectionState.connecting,
+      ConnectionState.connected,
+      ConnectionState.offline
+    ]);
     await serverTask;
   });
 
@@ -197,10 +215,10 @@ void main() {
   test('events dispatch and local or remote close fail pending requests',
       () async {
     final channel = FakeWebSocketChannel();
-    final client = await connectedFakeClient(channel);
+    final eventFuture = Completer<Event>();
+    final client =
+        await connectedFakeClient(channel, onEvent: eventFuture.complete);
     addTearDown(channel.dispose);
-
-    final eventFuture = client.events.first;
     channel.receive(BinaryEnvelope(
       type: FrameCode.event,
       event: 'chat.presence',
@@ -209,7 +227,7 @@ void main() {
         3: StructValue({1: 'general', 2: 'alice', 3: false}),
       })),
     ).encode());
-    final event = await eventFuture;
+    final event = await eventFuture.future;
     expect(event.presence!.userId, 'alice');
     expect(event.presence!.online, isFalse);
 
@@ -232,6 +250,36 @@ void main() {
     expect(remoteClient.closed, isTrue);
   });
 
+  test('remote close reports offline once', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final socketReady = Completer<WebSocket>();
+    final serverTask = () async {
+      final request = await server.first;
+      socketReady.complete(await WebSocketTransformer.upgrade(request));
+    }();
+    final states = <ConnectionState>[];
+    final offline = Completer<void>();
+    final latch = LatchClient(
+        ClientOptions(Uri.parse('ws://127.0.0.1:${server.port}/chat')),
+        onEvent: (_) {}, onConnectionStateChange: (state) {
+      states.add(state);
+      if (state == ConnectionState.offline) offline.complete();
+    });
+    final client = await latch.connect();
+    expect(states, [ConnectionState.connecting, ConnectionState.connected]);
+    await (await socketReady.future).close();
+    await offline.future;
+    expect(client.closed, isTrue);
+    client.close();
+    expect(states, [
+      ConnectionState.connecting,
+      ConnectionState.connected,
+      ConnectionState.offline
+    ]);
+    await serverTask;
+  });
+
   test('connect rejects a connection_error received during setup', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -246,10 +294,15 @@ void main() {
       ).encode());
     }();
 
+    final states = <ConnectionState>[];
+    final latch = LatchClient(
+        ClientOptions(Uri.parse('ws://127.0.0.1:${server.port}/chat')),
+        onEvent: (_) {},
+        onConnectionStateChange: states.add);
+    final connecting = latch.connect();
+    expect(states, [ConnectionState.connecting]);
     await expectLater(
-      LatchClient(ClientOptions(Uri.parse(
-        'ws://127.0.0.1:${server.port}/chat',
-      ))).connect(),
+      connecting,
       throwsA(
         predicate<Object?>((error) =>
             error is LatchError &&
@@ -257,6 +310,7 @@ void main() {
             error.message == 'bad token'),
       ),
     );
+    expect(states, [ConnectionState.connecting, ConnectionState.offline]);
     await serverTask;
   });
 }

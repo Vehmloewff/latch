@@ -73,30 +73,64 @@ type SendMessageResponse struct {
 // LatchClient is a Latch client. Construct one with New,
 // then call Connect to obtain a ConnectedLatchClient.
 type LatchClient struct {
-	url string
+	url                     string
+	onEvent                 func(Event)
+	onConnectionStateChange func(ConnectionState)
 }
 
-// New creates a LatchClient targeting the given WebSocket URL.
-func New(url string) *LatchClient {
-	return &LatchClient{url: url}
+// ConnectionState describes the lifecycle of a connection.
+type ConnectionState string
+
+const (
+	ConnectionStateConnecting ConnectionState = "connecting"
+	ConnectionStateOffline    ConnectionState = "offline"
+	ConnectionStateConnected  ConnectionState = "connected"
+)
+
+// New creates a LatchClient targeting the given WebSocket URL. onConnectionStateChange is optional.
+func New(url string, onEvent func(Event), onConnectionStateChange ...func(ConnectionState)) *LatchClient {
+	var onState func(ConnectionState)
+	if len(onConnectionStateChange) > 0 {
+		onState = onConnectionStateChange[0]
+	}
+	return &LatchClient{url: url, onEvent: onEvent, onConnectionStateChange: onState}
 }
 
 // Connect opens a live ConnectedLatchClient.
 func (c *LatchClient) Connect(ctx context.Context) (*ConnectedLatchClient, error) {
+	if c.onConnectionStateChange != nil {
+		c.onConnectionStateChange(ConnectionStateConnecting)
+	}
 	conn, err := client.Connect(ctx, c.url, "1")
 	if err != nil {
+		if c.onConnectionStateChange != nil {
+			c.onConnectionStateChange(ConnectionStateOffline)
+		}
 		return nil, err
 	}
 
-	result := &ConnectedLatchClient{conn: conn, events: client.RegisterEvent[Event](conn)}
+	events := client.RegisterEvent[Event](conn)
+	result := &ConnectedLatchClient{conn: conn}
+	if c.onConnectionStateChange != nil {
+		c.onConnectionStateChange(ConnectionStateConnected)
+	}
+	go func() {
+		for event := range events {
+			if c.onEvent != nil {
+				c.onEvent(event)
+			}
+		}
+		if c.onConnectionStateChange != nil {
+			c.onConnectionStateChange(ConnectionStateOffline)
+		}
+	}()
 	conn.Start()
 	return result, nil
 }
 
 // ConnectedLatchClient is a live, connected LatchClient client.
 type ConnectedLatchClient struct {
-	conn   *client.Conn
-	events <-chan Event
+	conn *client.Conn
 }
 
 func (c *ConnectedLatchClient) ChatHistory(ctx context.Context, req HistoryRequest) (HistoryResponse, error) {
@@ -113,11 +147,6 @@ func (c *ConnectedLatchClient) ChatListRooms(ctx context.Context, req ListRoomsR
 
 func (c *ConnectedLatchClient) ChatSendMessage(ctx context.Context, req SendMessageRequest) (SendMessageResponse, error) {
 	return client.Call[SendMessageResponse](ctx, c.conn, "chat_send_message", req)
-}
-
-// Events returns the single server-to-client event stream.
-func (c *ConnectedLatchClient) Events() <-chan Event {
-	return c.events
 }
 
 // Close closes the connection.

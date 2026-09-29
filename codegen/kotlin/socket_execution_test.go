@@ -125,9 +125,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ExecutionException
 
 fun main(args: Array<String>) {
-  val client = LatchClient(args.single()).connect().get(8, TimeUnit.SECONDS)
   val arrived = CountDownLatch(1)
-  client.onEvent = { e -> check(e.text == "early"); arrived.countDown() }
+  val states = java.util.concurrent.CopyOnWriteArrayList<ConnectionState>()
+  val client = LatchClient(args.single(), { e -> check(e.text == "early"); arrived.countDown() }, { states.add(it) }).connect().get(8, TimeUnit.SECONDS)
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED))
   check(arrived.await(4, TimeUnit.SECONDS))
   val packet = Packet("hello", State.Open, null, blob = byteArrayOf(1, 2), history = emptyList(), tags = emptyMap())
   val response = client.chatSendMessage(packet).get(5, TimeUnit.SECONDS)
@@ -137,8 +138,13 @@ fun main(args: Array<String>) {
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("pending RPC survived server close") }
   catch (_: ExecutionException) { }
   client.close()
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED, ConnectionState.OFFLINE))
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("closed connection allowed RPC") }
   catch (_: ExecutionException) { }
+  val failedStates = mutableListOf<ConnectionState>()
+  try { LatchClient("not a websocket URL", { _ -> }, { failedStates.add(it) }).connect().get(5, TimeUnit.SECONDS); error("invalid URL connected") }
+  catch (_: ExecutionException) { }
+  check(failedStates == listOf(ConnectionState.CONNECTING, ConnectionState.OFFLINE))
   println("Kotlin real WebSocket lifecycle passed")
 }
 `
