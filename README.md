@@ -143,6 +143,12 @@ func main() {
     }); err != nil {
         log.Fatal(err)
     }
+
+    if err := server.GenerateRust(latch.RustOptions{
+        OutputDir: "./rust",
+    }); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
@@ -197,6 +203,28 @@ print(result.message.text)
 
 ```
 
+Rust (generated Cargo crate):
+
+```rust
+use latch_client::{AddRequest, LatchClient};
+
+let client = LatchClient::connect(
+    "ws://localhost:8080/ws",
+    |event| println!("{event:?}"),
+    |state| println!("{state:?}"),
+)?;
+let result = client.math_add(AddRequest { a: 1, b: 2 })?;
+println!("{}", result.result);
+client.close();
+```
+
+`GenerateRust(RustOptions{OutputDir: "client/rust"})` writes `Cargo.toml` and
+`src/` with the typed client, binary codec, and WebSocket transport. Rust also
+supports `wss://` and `connect_with_headers` for refreshing handshake headers
+on each dial. Initial connection retries for five seconds by default; the
+transport's `connect_with_timeout` can set another deadline. RPC methods block
+until their response arrives, and offline calls queue until reconnection.
+
 Go:
 
 ```go
@@ -217,13 +245,13 @@ fmt.Println(result.Result)
 
 Method names are registered in `snake_case` and generated in each client
 language's conventional style. For example, `math_add` becomes `mathAdd` in
-TypeScript and Dart, and `MathAdd` in Go. Request types, response types, and
+TypeScript and Dart, `math_add` in Rust, and `MathAdd` in Go. Request types, response types, and
 event payloads are generated from the server definition, so client code never
 needs to manually cast responses or maintain a second copy of the protocol.
 
-Generated clients automatically retry failed connections about every two seconds. The connection-state callback reports `connecting`, `offline`, and `connected` as the connection changes. A client that has connected once remains usable after a disconnect: new RPC calls made while offline wait in an unbounded queue and run when the connection returns. Requests already sent on a failed connection are **not** replayed, since replaying an action could apply it twice; those calls fail and the caller can decide whether to retry. Explicitly closing or disposing the client stops reconnecting and fails queued calls. An initial `connect()` also keeps retrying until it succeeds (or is cancelled where the language API supports cancellation).
+Generated clients automatically retry failed connections about every two seconds. The connection-state callback reports `connecting`, `offline`, and `connected` as the connection changes. A client that has connected once remains usable after a disconnect: new RPC calls made while offline wait in an unbounded queue and run when the connection returns. Requests already sent on a failed connection are **not** replayed, since replaying an action could apply it twice; those calls fail and the caller can decide whether to retry. Explicitly closing or disposing the client stops reconnecting and fails queued calls. An initial `connect()` also keeps retrying until it succeeds (or is cancelled where the language API supports cancellation); Rust's synchronous `connect` instead uses a five-second initial deadline.
 
-To customize WebSocket handshake headers, supply an optional constructor-time `onRequestConstructed` callback in Swift (`inout URLRequest`), Kotlin (`WebSocket.Builder`), or C# (`ClientWebSocketOptions`). It runs before **every** connection attempt, including retries, so callers can refresh credentials. Go uses `latchclient.NewWithOptions(url, onEvent, latchclient.Options{OnRequestConstructed: func(headers http.Header) { headers.Set("Authorization", "Bearer ...") }})`; the callback receives fresh headers for each dial. TypeScript's standard WebSocket API and the generated cross-platform Dart channel do not expose mutable HTTP upgrade requests; TypeScript callers can instead supply a custom `webSocketFactory` where their environment permits it.
+To customize WebSocket handshake headers, supply an optional constructor-time `onRequestConstructed` callback in Swift (`inout URLRequest`), Kotlin (`WebSocket.Builder`), C# (`ClientWebSocketOptions`), or Rust (`connect_with_headers` with a mutable `HeaderMap`). It runs before **every** connection attempt, including retries, so callers can refresh credentials. Go uses `latchclient.NewWithOptions(url, onEvent, latchclient.Options{OnRequestConstructed: func(headers http.Header) { headers.Set("Authorization", "Bearer ...") }})`; the callback receives fresh headers for each dial. TypeScript's standard WebSocket API and the generated cross-platform Dart channel do not expose mutable HTTP upgrade requests; TypeScript callers can instead supply a custom `webSocketFactory` where their environment permits it.
 
 ## Supported types
 
@@ -233,7 +261,7 @@ unsigned integers up to 32 bits, `float32`/`float64`, slices, arrays,
 `jsonschema_enum:"a,b,c"` tag. Every exported field in a protocol struct must
 have a `latch:"N"` tag with a positive, stable wire ID; use
 `latch:"N,omitempty"` for optional fields. Missing field numbers panic during
-wire encoding or decoding. Generated TypeScript and Dart field names are derived from the Go field names using lower camel case. Swift clients use Foundation and Swift concurrency, and expose RPC methods as `async throws` functions with events delivered to the constructor callback. All generated clients expose `connecting`, `connected`, and `offline` connection states through an optional constructor callback.
+wire encoding or decoding. Generated TypeScript and Dart field names are derived from the Go field names using lower camel case. Swift clients use Foundation and Swift concurrency, and expose RPC methods as `async throws` functions with events delivered to the constructor callback. Rust generates a standalone Cargo crate with synchronous RPCs; `Option<T>` models nullable fields and nullable Go collections, and `LatchTime` stores Unix nanoseconds. All generated clients expose `connecting`, `connected`, and `offline` connection states through an optional constructor callback.
 
 Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 `int64`/`uint64`, non-string map keys, and types implementing
@@ -245,6 +273,7 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 go build ./...
 go test ./...
 go run ./integration_test swift # starts the server and runs every Swift test
+go run ./integration_test rust  # Cargo codec, lifecycle, and live chat tests
 
 # Full integration runner: installs TypeScript/Dart dependencies, runs both
 # standalone binary-runtime suites, regenerates clients, and runs the example

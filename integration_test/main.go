@@ -40,7 +40,7 @@ func runExample(selected map[string]bool) {
 
 	fmt.Printf("\n=== example: %s ===\n", exampleName)
 	args := []string{"run", "./cmd/generate_clients"}
-	for _, language := range []string{"go", "typescript", "dart", "swift", "kotlin"} {
+	for _, language := range []string{"go", "typescript", "dart", "swift", "kotlin", "rust"} {
 		if selected[language] {
 			args = append(args, language)
 		}
@@ -59,7 +59,7 @@ func runExample(selected map[string]bool) {
 		run(dart, "dart", "pub", "get")
 		run(dart, "dart", "analyze", "lib", "main.dart", "test")
 	}
-	if !selected["go"] && !selected["typescript"] && !selected["dart"] && !selected["swift"] && !selected["kotlin"] {
+	if !selected["go"] && !selected["typescript"] && !selected["dart"] && !selected["swift"] && !selected["kotlin"] && !selected["rust"] {
 		return
 	}
 
@@ -129,6 +129,13 @@ func runExample(selected map[string]bool) {
 			panic(fmt.Errorf("%s Swift tests: %w", exampleName, err))
 		}
 	}
+	if selected["rust"] {
+		rustTest := exec.Command("cargo", "test", "--offline")
+		rustTest.Dir, rustTest.Env, rustTest.Stdout, rustTest.Stderr = filepath.Join(ex, "rust"), env, os.Stdout, os.Stderr
+		if err := rustTest.Run(); err != nil {
+			panic(fmt.Errorf("%s Rust integration tests: %w", exampleName, err))
+		}
+	}
 	if selected["dart"] {
 		dartTests := exec.Command("dart", "test")
 		dartTests.Dir, dartTests.Env, dartTests.Stdout, dartTests.Stderr = dart, env, os.Stdout, os.Stderr
@@ -157,7 +164,7 @@ func runBinaryRuntimeTests(selected map[string]bool) {
 }
 
 func languages(args []string) map[string]bool {
-	valid := map[string]bool{"go": true, "dart": true, "typescript": true, "swift": true, "kotlin": true}
+	valid := map[string]bool{"go": true, "dart": true, "typescript": true, "swift": true, "kotlin": true, "rust": true}
 	selected := map[string]bool{}
 	if len(args) == 0 {
 		for language := range valid {
@@ -167,7 +174,7 @@ func languages(args []string) map[string]bool {
 	}
 	for _, language := range args {
 		if !valid[language] {
-			panic(fmt.Sprintf("unknown language %q; choose go, dart, typescript, swift, or kotlin", language))
+			panic(fmt.Sprintf("unknown language %q; choose go, dart, typescript, swift, kotlin, or rust", language))
 		}
 		selected[language] = true
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/vehmloewff/latch/codegen/dart"
 	"github.com/vehmloewff/latch/codegen/golang"
 	"github.com/vehmloewff/latch/codegen/kotlin"
+	"github.com/vehmloewff/latch/codegen/rust"
 	"github.com/vehmloewff/latch/codegen/swift"
 	"github.com/vehmloewff/latch/codegen/typescript"
 	"github.com/vehmloewff/latch/protocol"
@@ -82,6 +83,16 @@ type CSharpOptions struct {
 	ClientName string
 }
 
+// RustOptions configures standalone Rust Cargo client generation.
+type RustOptions struct {
+	// OutputDir is the directory containing the generated Cargo.toml and src/.
+	OutputDir string
+	// Package overrides the Cargo package name (default latch_client).
+	Package string
+	// ClientName overrides the client struct name (default LatchClient).
+	ClientName string
+}
+
 // GenerateOptions selects which language clients Server.Generate produces.
 // Leave a field nil to skip that language.
 type GenerateOptions struct {
@@ -91,6 +102,7 @@ type GenerateOptions struct {
 	Swift      *SwiftOptions
 	Kotlin     *KotlinOptions
 	CSharp     *CSharpOptions
+	Rust       *RustOptions
 }
 
 // Schema finalizes the server (if necessary) and returns the normalized
@@ -219,6 +231,22 @@ func (s *Server[S]) GenerateCSharp(opts CSharpOptions) error {
 	return nil
 }
 
+// GenerateRust finalizes the server and writes a standalone Cargo client.
+func (s *Server[S]) GenerateRust(opts RustOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := rust.Generate(schema, rust.Options{Package: opts.Package, ClientName: opts.ClientName})
+	if err != nil {
+		return fmt.Errorf("latch: generate rust: %w", err)
+	}
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latch: write rust output: %w", err)
+	}
+	return nil
+}
+
 // Generate finalizes the server (if not already finalized) and writes
 // generated client code for every requested language. It is retained as a
 // convenience wrapper; callers that want one target can use
@@ -251,6 +279,11 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	}
 	if opts.CSharp != nil {
 		if err := s.GenerateCSharp(*opts.CSharp); err != nil {
+			return err
+		}
+	}
+	if opts.Rust != nil {
+		if err := s.GenerateRust(*opts.Rust); err != nil {
 			return err
 		}
 	}

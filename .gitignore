@@ -14,5 +14,9 @@ build/
 # Swift Package Manager
 .build/
 
+# Rust/Cargo
+/target/
+**/target/
+
 # Editor/OS
 .DS_Store

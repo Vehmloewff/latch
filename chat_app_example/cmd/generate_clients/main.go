@@ -46,6 +46,11 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if selected("rust") {
+		if err := lw.GenerateRust(latch.RustOptions{OutputDir: filepath.Join(root, "rust"), Package: "chat_app_client"}); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if selected("kotlin") {
 		if err := lw.GenerateKotlin(latch.KotlinOptions{OutputDir: filepath.Join(root, "kotlin")}); err != nil {
 			log.Fatal(err)

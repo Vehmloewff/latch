@@ -1,0 +1,9 @@
+[package]
+name = "chat_app_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+url = "2.5"
