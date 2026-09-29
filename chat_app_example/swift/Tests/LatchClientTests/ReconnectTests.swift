@@ -15,9 +15,10 @@ final class ReconnectTests: XCTestCase {
         let stateContinuation = stateSink!
         let eventContinuation = eventSink!
         let connection = try await LatchClient(
-            url: server.url,
+            url: server.url.appending(queryItems: [URLQueryItem(name: "version", value: "stale")]),
             onEvent: { eventContinuation.yield($0) },
-            onConnectionStateChange: { stateContinuation.yield($0) }
+            onConnectionStateChange: { stateContinuation.yield($0) },
+            onRequestConstructed: { Self.customizeRequest(&$0) }
         ).connect()
         defer { Task { await connection.close() } }
         let watchdog = makeWatchdog(connection, stateContinuation, eventContinuation)
@@ -54,10 +55,30 @@ final class ReconnectTests: XCTestCase {
         let event = await events.next()
         XCTAssertEqual(event?.kind, "restored")
         XCTAssertTrue(server.waitForObservations(), "replacement socket did not finish observing requests")
-        XCTAssertEqual(server.receivedMethods, ["chat_send_message", "chat_list_rooms"])
+        assertRequests(server)
         await connection.close()
         let closed = await states.next()
         XCTAssertEqual(closed, .offline)
+    }
+
+    private static func customizeRequest(_ request: inout URLRequest) {
+        request.setValue("swift-test-token", forHTTPHeaderField: "X-Latch-Test")
+        var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "source", value: "swift"),
+            URLQueryItem(name: "version", value: "wrong")
+        ]
+        request.url = components.url!
+    }
+
+    private func assertRequests(_ server: DroppingWebSocketServer) {
+        XCTAssertEqual(server.receivedMethods, ["chat_send_message", "chat_list_rooms"])
+        let handshakes = server.handshakes
+        XCTAssertEqual(handshakes.count, 2)
+        for handshake in handshakes {
+            XCTAssertTrue(handshake.contains("X-Latch-Test: swift-test-token"), handshake)
+            XCTAssertTrue(handshake.contains("GET /ws?source=swift&version=1 HTTP/1.1"), handshake)
+        }
     }
 
     private func makeWatchdog(
@@ -81,6 +102,7 @@ private final class DroppingWebSocketServer {
     private let listener: Int32
     private let lock = NSLock()
     private var methods: [String] = []
+    private var requests: [String] = []
     private let reconnect = DispatchSemaphore(value: 0)
     private let observed = DispatchSemaphore(value: 0)
     private let finished = DispatchSemaphore(value: 0)
@@ -88,6 +110,7 @@ private final class DroppingWebSocketServer {
 
     var firstMethod: String? { receivedMethods.first }
     var receivedMethods: [String] { lock.lock(); defer { lock.unlock() }; return methods }
+    var handshakes: [String] { lock.lock(); defer { lock.unlock() }; return requests }
 
     init() throws {
         let listeningSocket = socket(AF_INET, SOCK_STREAM, 0)
@@ -175,6 +198,7 @@ private final class DroppingWebSocketServer {
               let key = keyLine.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) else {
             return false
         }
+        lock.lock(); requests.append(text); lock.unlock()
         let digest = Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))
         let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" +
             "Connection: Upgrade\r\nSec-WebSocket-Accept: \(Data(digest).base64EncodedString())\r\n\r\n"

@@ -40,8 +40,8 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("swift: protocol has no event type")
 	}
 	b.WriteString("\npublic enum ConnectionState: String, Sendable { case connecting, offline, connected }\n\n")
-	fmt.Fprintf(&b, "public final class %s {\n  private let url: URL\n  private let onEvent: @Sendable (%s) -> Void\n  private let onConnectionStateChange: (@Sendable (ConnectionState) -> Void)?\n  public init(url: URL, onEvent: @escaping @Sendable (%s) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)? = nil) { self.url = url; self.onEvent = onEvent; self.onConnectionStateChange = onConnectionStateChange }\n  public func connect() async throws -> Connected%s {\n    onConnectionStateChange?(.connecting)\n    do { return try await Connected%s.connect(url: url, version: %q, onEvent: onEvent, onConnectionStateChange: onConnectionStateChange) }\n    catch { onConnectionStateChange?(.offline); throw error }\n  }\n}\n\n", clientName, swiftType(eventRef, typeNames), swiftType(eventRef, typeNames), clientName, clientName, p.Version)
-	fmt.Fprintf(&b, "public final class Connected%s {\n  private let session: LatchSession\n  private init(session: LatchSession) { self.session = session }\n  fileprivate static func connect(url: URL, version: String, onEvent: @escaping @Sendable (%s) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)?) async throws -> Connected%s {\n    let session = try await LatchSession.connect(url: url, version: version, onEvent: { data in\n      if let value = try? LatchBinary.decode(data, as: %s.self) { onEvent(value) }\n    }, onState: onConnectionStateChange)\n    return Connected%s(session: session)\n  }\n", clientName, swiftType(eventRef, typeNames), clientName, swiftType(eventRef, typeNames), clientName)
+	fmt.Fprintf(&b, "public final class %s {\n  private let url: URL\n  private let onEvent: @Sendable (%s) -> Void\n  private let onConnectionStateChange: (@Sendable (ConnectionState) -> Void)?\n  private let onRequestConstructed: (@Sendable (inout URLRequest) -> Void)?\n  public init(url: URL, onEvent: @escaping @Sendable (%s) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)? = nil, onRequestConstructed: (@Sendable (inout URLRequest) -> Void)? = nil) { self.url = url; self.onEvent = onEvent; self.onConnectionStateChange = onConnectionStateChange; self.onRequestConstructed = onRequestConstructed }\n  public func connect() async throws -> Connected%s {\n    onConnectionStateChange?(.connecting)\n    do { return try await Connected%s.connect(url: url, version: %q, onEvent: onEvent, onConnectionStateChange: onConnectionStateChange, onRequestConstructed: onRequestConstructed) }\n    catch { onConnectionStateChange?(.offline); throw error }\n  }\n}\n\n", clientName, swiftType(eventRef, typeNames), swiftType(eventRef, typeNames), clientName, clientName, p.Version)
+	fmt.Fprintf(&b, "public final class Connected%s {\n  private let session: LatchSession\n  private init(session: LatchSession) { self.session = session }\n  fileprivate static func connect(url: URL, version: String, onEvent: @escaping @Sendable (%s) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)?, onRequestConstructed: (@Sendable (inout URLRequest) -> Void)?) async throws -> Connected%s {\n    let session = try await LatchSession.connect(url: url, version: version, onEvent: { data in\n      if let value = try? LatchBinary.decode(data, as: %s.self) { onEvent(value) }\n    }, onState: onConnectionStateChange, onRequestConstructed: onRequestConstructed)\n    return Connected%s(session: session)\n  }\n", clientName, swiftType(eventRef, typeNames), clientName, swiftType(eventRef, typeNames), clientName)
 	for _, m := range p.Methods {
 		fmt.Fprintf(&b, "  public func %s(_ request: %s) async throws -> %s { try await session.call(%q, request: request) }\n", names.CamelCase(m.Name), swiftType(m.RequestType, typeNames), swiftType(m.ResponseType, typeNames), m.Name)
 	}
@@ -161,7 +161,7 @@ func renderType(b *strings.Builder, t *protocol.NamedType, typeNames map[string]
 			fmt.Fprintf(b, "%d: LatchValue.from(%s)", num, field)
 		}
 	}
-	b.WriteString("]) }\n  static func decodeLatch(_ latchValue: LatchValue) throws -> Self { guard case let .structure(fields) = latchValue else { throw LatchError.malformed };\n")
+	b.WriteString("]) }\n  static func decodeLatch(_ latchValue: LatchValue) throws -> Self { guard case let .structure(latchFields) = latchValue else { throw LatchError.malformed };\n")
 	for i, f := range t.Fields {
 		field := names.CamelCase(f.GoName)
 		ty := swiftType(f.Type, typeNames)
@@ -171,9 +171,13 @@ func renderType(b *strings.Builder, t *protocol.NamedType, typeNames map[string]
 			if decodeType.Kind == protocol.KindPointer {
 				decodeType = *decodeType.Elem
 			}
-			fmt.Fprintf(b, "    let %s: %s = try LatchValue.optional(fields[%d]) { value in try %s }\n", field, ty, num, swiftDecodeExpr(decodeType, "value", typeNames))
+			optionalTy := ty
+			if !strings.HasSuffix(optionalTy, "?") {
+				optionalTy += "?"
+			}
+			fmt.Fprintf(b, "    let %s: %s = try LatchValue.optional(latchFields[%d]) { value in try %s }\n", field, optionalTy, num, swiftDecodeExpr(decodeType, "value", typeNames))
 		} else {
-			fmt.Fprintf(b, "    guard let v%d = fields[%d] else { throw LatchError.malformed }; let %s = try %s\n", i, num, field, swiftDecodeExpr(f.Type, fmt.Sprintf("v%d", i), typeNames))
+			fmt.Fprintf(b, "    guard let v%d = latchFields[%d] else { throw LatchError.malformed }; let %s = try %s\n", i, num, field, swiftDecodeExpr(f.Type, fmt.Sprintf("v%d", i), typeNames))
 		}
 	}
 	b.WriteString("    return Self(")
@@ -194,19 +198,20 @@ private actor LatchSession {
   let version: String
   let onEvent: @Sendable (Data) -> Void
   let onState: (@Sendable (ConnectionState) -> Void)?
+  let onRequestConstructed: (@Sendable (inout URLRequest) -> Void)?
   var transport: LatchTransport?
   var reconnectTask: Task<Void, Never>?
   var stopped = false
-  private init(url: URL, version: String, transport: LatchTransport, onEvent: @escaping @Sendable (Data) -> Void, onState: (@Sendable (ConnectionState) -> Void)?) {
-    self.url = url; self.version = version; self.transport = transport; self.onEvent = onEvent; self.onState = onState
+  private init(url: URL, version: String, transport: LatchTransport, onEvent: @escaping @Sendable (Data) -> Void, onState: (@Sendable (ConnectionState) -> Void)?, onRequestConstructed: (@Sendable (inout URLRequest) -> Void)?) {
+    self.url = url; self.version = version; self.transport = transport; self.onEvent = onEvent; self.onState = onState; self.onRequestConstructed = onRequestConstructed
   }
-  static func connect(url: URL, version: String, onEvent: @escaping @Sendable (Data) -> Void, onState: (@Sendable (ConnectionState) -> Void)?) async throws -> LatchSession {
+  static func connect(url: URL, version: String, onEvent: @escaping @Sendable (Data) -> Void, onState: (@Sendable (ConnectionState) -> Void)?, onRequestConstructed: (@Sendable (inout URLRequest) -> Void)?) async throws -> LatchSession {
     while true {
       try Task.checkCancellation()
       do {
-        let t = try await LatchTransport.connect(url: url, version: version)
+        let t = try await LatchTransport.connect(url: url, version: version, onRequestConstructed: onRequestConstructed)
         if Task.isCancelled { await t.close(); throw CancellationError() }
-        let session = LatchSession(url: url, version: version, transport: t, onEvent: onEvent, onState: onState)
+        let session = LatchSession(url: url, version: version, transport: t, onEvent: onEvent, onState: onState, onRequestConstructed: onRequestConstructed)
         await session.start(t)
         return session
       } catch {
@@ -233,7 +238,7 @@ private actor LatchSession {
         if stopped { return }
         onState?(.connecting)
         do {
-          let next = try await LatchTransport.connect(url: url, version: version)
+          let next = try await LatchTransport.connect(url: url, version: version, onRequestConstructed: onRequestConstructed)
           if stopped || Task.isCancelled { await next.close(); return }
           transport = next
           current = next
@@ -308,5 +313,5 @@ private final class LatchPing: @unchecked Sendable {
   c?.resume(throwing: CancellationError())
  }
 }
-private actor LatchTransport { let ws:URLSessionWebSocketTask; var isClosed:Bool{closed}; var next=1; var pending:[String:CheckedContinuation<Data,Error>]=[:]; var closed=false; nonisolated let events:AsyncStream<Data>; let cont:AsyncStream<Data>.Continuation; private init(_ ws:URLSessionWebSocketTask){self.ws=ws;var c:AsyncStream<Data>.Continuation!;events=AsyncStream{c=$0};cont=c;Task{await self.receive()}}; static func connect(url:URL,version:String)async throws->LatchTransport{guard var components=URLComponents(url:url,resolvingAgainstBaseURL:false) else{throw LatchError.malformed};var query=components.queryItems ?? [];query.removeAll{$0.name == "version"};query.append(URLQueryItem(name:"version",value:version));components.queryItems=query;guard let target=components.url else{throw LatchError.malformed};let ws=URLSession.shared.webSocketTask(with:target);ws.resume();let ping=LatchPing();do{try await withTaskCancellationHandler { try await withCheckedThrowingContinuation{(c:CheckedContinuation<Void,Error>) in ping.install(c);ws.sendPing{error in ping.finish(error)} } } onCancel: { ping.cancel();ws.cancel(with:.goingAway,reason:nil) };try Task.checkCancellation()}catch{ws.cancel(with:.goingAway,reason:nil);throw error};return LatchTransport(ws)}; func call(_ method:String,payload:Data)async throws->Data{guard !closed else{throw LatchError(code:"connection_closed",message:"the connection is closed")};let id=String(next);next+=1;let bytes=Envelope(kind:3,id:id,method:method,payload:payload).data();let response=try await withTaskCancellationHandler { try await withCheckedThrowingContinuation{(c:CheckedContinuation<Data,Error>) in pending[id]=c;Task{guard self.pending[id] != nil else{return};do{try await ws.send(.data(bytes))}catch{self.fail(error)}}} } onCancel: { Task { await self.reject(id,CancellationError()) } };return response}; func reject(_ id:String,_ e:Error){pending.removeValue(forKey:id)?.resume(throwing:e)}; func fail(_ error:Error){guard !closed else{return};closed=true;ws.cancel(with:.goingAway,reason:nil);for (_,c) in pending{c.resume(throwing:error)};pending.removeAll();cont.finish()}; func receive()async{while true{do{let m=try await ws.receive();guard case let .data(d)=m else{continue};let e=try Envelope.parse(d);if e.kind==4{pending.removeValue(forKey:e.id)?.resume(returning:e.payload)}else if e.kind==5{pending.removeValue(forKey:e.id)?.resume(throwing:LatchError(code:e.code,message:e.error))}else if e.kind==6{cont.yield(e.payload)}else if e.kind==7{throw LatchError(code:e.code,message:e.error)}}catch{fail(error);return}}}; func close()async{guard !closed else{return};closed=true;ws.cancel(with:.normalClosure,reason:nil);let error=LatchError(code:"connection_closed",message:"the connection is closed");for (_,c) in pending{c.resume(throwing:error)};pending.removeAll();cont.finish()} }
+private actor LatchTransport { let ws:URLSessionWebSocketTask; var isClosed:Bool{closed}; var next=1; var pending:[String:CheckedContinuation<Data,Error>]=[:]; var closed=false; nonisolated let events:AsyncStream<Data>; let cont:AsyncStream<Data>.Continuation; private init(_ ws:URLSessionWebSocketTask){self.ws=ws;var c:AsyncStream<Data>.Continuation!;events=AsyncStream{c=$0};cont=c;Task{await self.receive()}}; static func connect(url:URL,version:String,onRequestConstructed:(@Sendable (inout URLRequest)->Void)?)async throws->LatchTransport{var request=URLRequest(url:url);onRequestConstructed?(&request);guard let requestURL=request.url,var components=URLComponents(url:requestURL,resolvingAgainstBaseURL:false) else{throw LatchError.malformed};var query=components.queryItems ?? [];query.removeAll{$0.name == "version"};query.append(URLQueryItem(name:"version",value:version));components.queryItems=query;guard let target=components.url else{throw LatchError.malformed};request.url=target;try Task.checkCancellation();let ws=URLSession.shared.webSocketTask(with:request);ws.resume();let ping=LatchPing();do{try await withTaskCancellationHandler { try await withCheckedThrowingContinuation{(c:CheckedContinuation<Void,Error>) in ping.install(c);ws.sendPing{error in ping.finish(error)} } } onCancel: { ping.cancel();ws.cancel(with:.goingAway,reason:nil) };try Task.checkCancellation()}catch{ws.cancel(with:.goingAway,reason:nil);throw error};return LatchTransport(ws)}; func call(_ method:String,payload:Data)async throws->Data{guard !closed else{throw LatchError(code:"connection_closed",message:"the connection is closed")};let id=String(next);next+=1;let bytes=Envelope(kind:3,id:id,method:method,payload:payload).data();let response=try await withTaskCancellationHandler { try await withCheckedThrowingContinuation{(c:CheckedContinuation<Data,Error>) in pending[id]=c;Task{guard self.pending[id] != nil else{return};do{try await ws.send(.data(bytes))}catch{self.fail(error)}}} } onCancel: { Task { await self.reject(id,CancellationError()) } };return response}; func reject(_ id:String,_ e:Error){pending.removeValue(forKey:id)?.resume(throwing:e)}; func fail(_ error:Error){guard !closed else{return};closed=true;ws.cancel(with:.goingAway,reason:nil);for (_,c) in pending{c.resume(throwing:error)};pending.removeAll();cont.finish()}; func receive()async{while true{do{let m=try await ws.receive();guard case let .data(d)=m else{continue};let e=try Envelope.parse(d);if e.kind==4{pending.removeValue(forKey:e.id)?.resume(returning:e.payload)}else if e.kind==5{pending.removeValue(forKey:e.id)?.resume(throwing:LatchError(code:e.code,message:e.error))}else if e.kind==6{cont.yield(e.payload)}else if e.kind==7{throw LatchError(code:e.code,message:e.error)}}catch{fail(error);return}}}; func close()async{guard !closed else{return};closed=true;ws.cancel(with:.normalClosure,reason:nil);let error=LatchError(code:"connection_closed",message:"the connection is closed");for (_,c) in pending{c.resume(throwing:error)};pending.removeAll();cont.finish()} }
 `

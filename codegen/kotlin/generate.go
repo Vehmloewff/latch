@@ -116,7 +116,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	for _, t := range sorted {
 		renderType(&b, t, typeNames)
 	}
-	fmt.Fprintf(&b, "\nclass %s(private val url: String, private val onEvent: (%s) -> Unit,\n  private val onConnectionStateChange: ((ConnectionState) -> Unit)? = null,\n  private val onEventError: ((Throwable) -> Unit)? = null) {\n  fun connect(): java.util.concurrent.CompletableFuture<Connected%s> =\n    LatchTransport.connect(url, %q, { payload -> onEvent(%s) }, onEventError, onConnectionStateChange).thenApply { Connected%s(it) }\n}\n", client, kotlinType(event, typeNames), client, p.Version, decodeExpr("LatchBinary.decode(payload)", event, typeNames), client)
+	fmt.Fprintf(&b, "\nclass %s(private val url: String, private val onEvent: (%s) -> Unit,\n  private val onConnectionStateChange: ((ConnectionState) -> Unit)? = null,\n  private val onEventError: ((Throwable) -> Unit)? = null,\n  private val onRequestConstructed: ((java.net.http.WebSocket.Builder) -> Unit)? = null) {\n  fun connect(): java.util.concurrent.CompletableFuture<Connected%s> =\n    LatchTransport.connect(url, %q, { payload -> onEvent(%s) }, onEventError, onConnectionStateChange, onRequestConstructed).thenApply { Connected%s(it) }\n}\n", client, kotlinType(event, typeNames), client, p.Version, decodeExpr("LatchBinary.decode(payload)", event, typeNames), client)
 	fmt.Fprintf(&b, "\nclass Connected%s internal constructor(private val transport: LatchTransport) : AutoCloseable {\n", client)
 	for _, m := range p.Methods {
 		fmt.Fprintf(&b, "\n  fun %s(request: %s): java.util.concurrent.CompletableFuture<%s> =\n", kotlinID(names.CamelCase(m.Name)), kotlinType(m.RequestType, typeNames), kotlinType(m.ResponseType, typeNames))

@@ -223,6 +223,8 @@ needs to manually cast responses or maintain a second copy of the protocol.
 
 Generated clients automatically retry failed connections about every two seconds. The connection-state callback reports `connecting`, `offline`, and `connected` as the connection changes. A client that has connected once remains usable after a disconnect: new RPC calls made while offline wait in an unbounded queue and run when the connection returns. Requests already sent on a failed connection are **not** replayed, since replaying an action could apply it twice; those calls fail and the caller can decide whether to retry. Explicitly closing or disposing the client stops reconnecting and fails queued calls. An initial `connect()` also keeps retrying until it succeeds (or is cancelled where the language API supports cancellation).
 
+To customize WebSocket handshake headers, supply an optional constructor-time `onRequestConstructed` callback in Swift (`inout URLRequest`), Kotlin (`WebSocket.Builder`), or C# (`ClientWebSocketOptions`). It runs before **every** connection attempt, including retries, so callers can refresh credentials. Go uses `latchclient.NewWithOptions(url, onEvent, latchclient.Options{OnRequestConstructed: func(headers http.Header) { headers.Set("Authorization", "Bearer ...") }})`; the callback receives fresh headers for each dial. TypeScript's standard WebSocket API and the generated cross-platform Dart channel do not expose mutable HTTP upgrade requests; TypeScript callers can instead supply a custom `webSocketFactory` where their environment permits it.
+
 ## Supported types
 
 Latch supports named exported structs, strings, booleans, signed and

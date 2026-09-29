@@ -274,6 +274,7 @@ internal sealed class LatchTransport : IAsyncDisposable
     private readonly Action<byte[]> _onEvent;
     private readonly Action<Exception>? _onFailure;
     private readonly Action<ConnectionState>? _onStateChange;
+    private readonly Action<System.Net.WebSockets.ClientWebSocketOptions>? _onRequestConstructed;
     private readonly TaskCompletionSource<LatchTransport> _initial = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private System.Net.WebSockets.ClientWebSocket? _socket;
     private System.Net.WebSockets.ClientWebSocket? _attempt;
@@ -281,11 +282,13 @@ internal sealed class LatchTransport : IAsyncDisposable
     private bool _closed;
     private ConnectionState _state = ConnectionState.Connecting;
 
-    private LatchTransport(Uri uri, Action<byte[]> onEvent, Action<Exception>? onFailure, Action<ConnectionState>? onStateChange)
-    { _uri = uri; _onEvent = onEvent; _onFailure = onFailure; _onStateChange = onStateChange; }
+    private LatchTransport(Uri uri, Action<byte[]> onEvent, Action<Exception>? onFailure, Action<ConnectionState>? onStateChange,
+        Action<System.Net.WebSockets.ClientWebSocketOptions>? onRequestConstructed)
+    { _uri = uri; _onEvent = onEvent; _onFailure = onFailure; _onStateChange = onStateChange; _onRequestConstructed = onRequestConstructed; }
 
     internal static async Task<LatchTransport> ConnectAsync(string url, string version, Action<byte[]> onEvent,
         Action<Exception>? onFailure, Action<ConnectionState>? onStateChange,
+        Action<System.Net.WebSockets.ClientWebSocketOptions>? onRequestConstructed,
         System.Threading.CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -306,7 +309,7 @@ internal sealed class LatchTransport : IAsyncDisposable
             try { onStateChange?.Invoke(ConnectionState.Offline); } catch { }
             throw;
         }
-        var transport = new LatchTransport(uri, onEvent, onFailure, onStateChange);
+        var transport = new LatchTransport(uri, onEvent, onFailure, onStateChange, onRequestConstructed);
         // The token governs only initial connection. After success, the connected client
         // owns its transport and must be disposed explicitly.
         using var registration = cancellationToken.Register(() =>
@@ -370,6 +373,9 @@ internal sealed class LatchTransport : IAsyncDisposable
             lock (_gate) { if (_closed) return; _attempt = socket; }
             try
             {
+                _stop.Token.ThrowIfCancellationRequested();
+                _onRequestConstructed?.Invoke(socket.Options);
+                _stop.Token.ThrowIfCancellationRequested();
                 await socket.ConnectAsync(_uri, _stop.Token).ConfigureAwait(false);
                 lock (_gate)
                 {

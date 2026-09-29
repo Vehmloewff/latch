@@ -51,7 +51,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 		return nil, fmt.Errorf("golang: %w", err)
 	}
 
-	imports := "import (\n\t\"context\"\n\t\"sync\"\n\t\"time\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n"
+	imports := "import (\n\t\"context\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n"
 	source := header + fmt.Sprintf("package %s\n\n", opts.Package) + imports + goBody(typesSrc) + "\n\n" + goBody(clientSrc) + "\n"
 	formatted, err := format.Source([]byte(source))
 	if err != nil {

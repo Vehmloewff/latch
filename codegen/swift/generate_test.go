@@ -29,7 +29,7 @@ func TestGenerateProducesStandaloneSwiftClient(t *testing.T) {
 	if !bytes.Equal(first["LatchClient.swift"], second["LatchClient.swift"]) {
 		t.Fatal("generation is not deterministic")
 	}
-	for _, want := range []string{"public final class LatchClient", "chatSendMessage", "public init(url: URL, onEvent: @escaping @Sendable (Event) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)? = nil)", "public enum ConnectionState: String, Sendable { case connecting, offline, connected }", "onConnectionStateChange?(.connecting)", "onState?(.connected)", "onState?(.offline)", "Task.sleep(for: .seconds(2))", "onEvent(value)", "private struct Reader", "case .string(let s): if T.self == String.self{return s as! T}; if let t=T.self as? any LatchCodable.Type", "guard r.done() else { throw LatchError.malformed }"} {
+	for _, want := range []string{"public final class LatchClient", "chatSendMessage", "public init(url: URL, onEvent: @escaping @Sendable (Event) -> Void, onConnectionStateChange: (@Sendable (ConnectionState) -> Void)? = nil, onRequestConstructed: (@Sendable (inout URLRequest) -> Void)? = nil)", "public enum ConnectionState: String, Sendable { case connecting, offline, connected }", "onConnectionStateChange?(.connecting)", "onState?(.connected)", "onState?(.offline)", "Task.sleep(for: .seconds(2))", "onEvent(value)", "onRequestConstructed?(&request)", "webSocketTask(with:request)", "onRequestConstructed: onRequestConstructed", "private struct Reader", "case .string(let s): if T.self == String.self{return s as! T}; if let t=T.self as? any LatchCodable.Type", "guard r.done() else { throw LatchError.malformed }"} {
 		if !bytes.Contains(first["LatchClient.swift"], []byte(want)) {
 			t.Errorf("generated Swift source missing %q", want)
 		}

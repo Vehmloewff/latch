@@ -134,8 +134,9 @@ fun main() {
   val events = mutableListOf<String>()
   fun transport(receiver: (ByteArray) -> Unit = { events.add(LatchValue.string(LatchBinary.decode(it))) }): LatchTransport {
     val conn = LatchTransport::class.java.getDeclaredConstructor(java.net.URI::class.java, kotlin.jvm.functions.Function1::class.java,
-      kotlin.jvm.functions.Function1::class.java, kotlin.jvm.functions.Function1::class.java).apply { isAccessible = true }
-      .newInstance(java.net.URI("ws://localhost"), receiver, { e: Throwable -> sendError = e }, null)
+      kotlin.jvm.functions.Function1::class.java, kotlin.jvm.functions.Function1::class.java,
+      kotlin.jvm.functions.Function1::class.java).apply { isAccessible = true }
+      .newInstance(java.net.URI("ws://localhost"), receiver, { e: Throwable -> sendError = e }, null, null)
     LatchTransport::class.java.getDeclaredField("socket").apply { isAccessible = true }.set(conn, socket)
     return conn
   }

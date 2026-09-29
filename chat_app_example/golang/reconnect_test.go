@@ -3,6 +3,7 @@ package chatappclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +50,72 @@ func TestInitialConnectRetriesTransientFailure(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+	}
+}
+
+func TestRequestHookRunsBeforeEveryDial(t *testing.T) {
+	var constructed atomic.Int32
+	auth := make(chan string, 4)
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		auth <- r.Header.Get("Authorization")
+		if n == 1 {
+			http.Error(w, "try again", http.StatusServiceUnavailable)
+			return
+		}
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		if n == 2 {
+			_ = ws.Close(websocket.StatusGoingAway, "reconnect")
+			return
+		}
+		defer ws.CloseNow()
+		_, _, _ = ws.Read(r.Context())
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	states := make(chan ConnectionState, 16)
+	client := NewWithOptions("ws"+strings.TrimPrefix(server.URL, "http"), nil, Options{
+		OnConnectionStateChange: func(state ConnectionState) { states <- state },
+		OnRequestConstructed: func(headers http.Header) {
+			headers.Set("Authorization", fmt.Sprintf("Bearer token-%d", constructed.Add(1)))
+		},
+	})
+	conn, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, want := range []ConnectionState{
+		ConnectionStateConnecting, ConnectionStateOffline, ConnectionStateConnecting,
+		ConnectionStateConnected, ConnectionStateOffline, ConnectionStateConnecting, ConnectionStateConnected,
+	} {
+		select {
+		case got := <-states:
+			if got != want {
+				t.Fatalf("state = %s, want %s", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	for n := 1; n <= 3; n++ {
+		select {
+		case got := <-auth:
+			if want := fmt.Sprintf("Bearer token-%d", n); got != want {
+				t.Fatalf("attempt %d Authorization = %q, want %q", n, got, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if got := constructed.Load(); got != 3 {
+		t.Fatalf("hook called %d times, want 3", got)
 	}
 }
 

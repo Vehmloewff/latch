@@ -167,20 +167,24 @@ func generateClientFile(pkg string, p *protocol.Protocol, clientName string, typ
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", pkg)
-	b.WriteString("import (\n\t\"context\"\n\t\"sync\"\n\t\"time\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n")
+	b.WriteString("import (\n\t\"context\"\n\t\"net/http\"\n\t\"sync\"\n\t\"time\"\n\n\t\"github.com/vehmloewff/latch/client\"\n)\n\n")
 
 	fmt.Fprintf(&b, "// %s is a Latch client. Construct one with New,\n", clientName)
 	fmt.Fprintf(&b, "// then call Connect to obtain a %s.\n", connectedName)
-	fmt.Fprintf(&b, "type %s struct {\n\turl string\n\tonEvent func(%s)\n\tonConnectionStateChange func(ConnectionState)\n}\n\n", clientName, eventGoType)
+	fmt.Fprintf(&b, "type %s struct {\n\turl string\n\tonEvent func(%s)\n\tonConnectionStateChange func(ConnectionState)\n\tonRequestConstructed func(http.Header)\n}\n\n", clientName, eventGoType)
 	b.WriteString("// ConnectionState describes the lifecycle of a connection.\ntype ConnectionState string\n\nconst (\n\tConnectionStateConnecting ConnectionState = \"connecting\"\n\tConnectionStateOffline ConnectionState = \"offline\"\n\tConnectionStateConnected ConnectionState = \"connected\"\n)\n\n")
 	fmt.Fprintf(&b, "// New creates a %s targeting the given WebSocket URL. onConnectionStateChange is optional.\n", clientName)
 	fmt.Fprintf(&b, "func New(url string, onEvent func(%s), onConnectionStateChange ...func(ConnectionState)) *%s {\n", eventGoType, clientName)
 	b.WriteString("\tvar onState func(ConnectionState)\n\tif len(onConnectionStateChange) > 0 {\n\t\tonState = onConnectionStateChange[0]\n\t}\n")
-	fmt.Fprintf(&b, "\treturn &%s{url: url, onEvent: onEvent, onConnectionStateChange: onState}\n}\n\n", clientName)
+	b.WriteString("\treturn NewWithOptions(url, onEvent, Options{OnConnectionStateChange: onState})\n}\n\n")
+	b.WriteString("// Options configures connection callbacks. OnRequestConstructed receives fresh HTTP headers\n// before every WebSocket dial, including retries and reconnects.\ntype Options struct {\n\tOnConnectionStateChange func(ConnectionState)\n\tOnRequestConstructed func(http.Header)\n}\n\n")
+	fmt.Fprintf(&b, "// NewWithOptions creates a %s with optional connection callbacks.\n", clientName)
+	fmt.Fprintf(&b, "func NewWithOptions(url string, onEvent func(%s), opts Options) *%s {\n", eventGoType, clientName)
+	fmt.Fprintf(&b, "\treturn &%s{url: url, onEvent: onEvent, onConnectionStateChange: opts.OnConnectionStateChange, onRequestConstructed: opts.OnRequestConstructed}\n}\n\n", clientName)
 
 	fmt.Fprintf(&b, "// Connect opens a live %s.\n", connectedName)
 	fmt.Fprintf(&b, "func (c *%s) Connect(ctx context.Context) (*%s, error) {\n", clientName, connectedName)
-	b.WriteString("\tsession := &connectionSession{changed: make(chan struct{}), done: make(chan struct{}), onState: c.onConnectionStateChange}\n\tsession.setState(ConnectionStateConnecting)\n")
+	b.WriteString("\tsession := &connectionSession{changed: make(chan struct{}), done: make(chan struct{}), onState: c.onConnectionStateChange, onRequestConstructed: c.onRequestConstructed}\n\tsession.setState(ConnectionStateConnecting)\n")
 	fmt.Fprintf(&b, "\tconn, err := session.dial(ctx, c.url, %q)\n", p.Version)
 	b.WriteString("\tif err != nil {\n\t\tsession.setState(ConnectionStateOffline)\n\t\treturn nil, err\n\t}\n\n")
 	fmt.Fprintf(&b, "\tresult := &%s{session: session}\n", connectedName)
@@ -213,6 +217,7 @@ type connectionSession struct {
  done chan struct{}
  stopped bool
  onState func(ConnectionState)
+ onRequestConstructed func(http.Header)
 }
 
 func (s *connectionSession) signal() { close(s.changed); s.changed = make(chan struct{}) }
@@ -222,7 +227,9 @@ func (s *connectionSession) setState(state ConnectionState) {
 func (s *connectionSession) dial(ctx context.Context, url, version string) (*client.Conn, error) {
  for {
   if err := ctx.Err(); err != nil { return nil, err }
-  conn, err := client.Connect(ctx, url, version)
+  headers := make(http.Header)
+  if s.onRequestConstructed != nil { s.onRequestConstructed(headers) }
+  conn, err := client.Connect(ctx, url, version, headers)
   if err == nil { return conn, nil }
   if err := ctx.Err(); err != nil { return nil, err }
   s.setState(ConnectionStateOffline)

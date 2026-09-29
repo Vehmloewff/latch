@@ -2,6 +2,7 @@ package kotlin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -121,7 +122,7 @@ func TestGeneratedKotlinRealSocketLifecycle(t *testing.T) {
 	}
 }
 
-func TestGeneratedKotlinReconnect(t *testing.T) {
+func TestGeneratedKotlinRequestHeadersAndReconnect(t *testing.T) {
 	kotlinc, err := exec.LookPath("kotlinc")
 	if err != nil {
 		t.Skip("kotlinc unavailable")
@@ -133,6 +134,12 @@ func TestGeneratedKotlinReconnect(t *testing.T) {
 	var attempts atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
+		if got := r.Header.Get("X-Latch-Attempt"); got != fmt.Sprint(n+1) {
+			t.Errorf("attempt %d header = %q", n, got)
+		}
+		if r.URL.Query().Get("foo") != "bar" || r.URL.Query().Get("version") != "v1" || len(r.URL.Query()["version"]) != 1 {
+			t.Errorf("attempt %d query = %q", n, r.URL.RawQuery)
+		}
 		if n == 1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
@@ -197,7 +204,7 @@ func TestGeneratedKotlinReconnect(t *testing.T) {
 	if out, err := exec.CommandContext(ctx, kotlinc, filepath.Join(dir, "LatchClient.kt"), filepath.Join(dir, "Reconnect.kt"), "-include-runtime", "-d", jar).CombinedOutput(); err != nil {
 		t.Fatalf("compile: %v\n%s", err, out)
 	}
-	if out, err := exec.CommandContext(ctx, java, "-jar", jar, "ws"+server.URL[len("http"):]).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, java, "-jar", jar, "ws"+server.URL[len("http"):]+"?foo=bar&version=old").CombinedOutput(); err != nil {
 		t.Fatalf("reconnect: %v\n%s", err, out)
 	}
 	if attempts.Load() != 3 {
@@ -212,7 +219,15 @@ import java.util.concurrent.ExecutionException
 fun main(args: Array<String>) {
   val states = CopyOnWriteArrayList<ConnectionState>()
   val event = java.util.concurrent.CountDownLatch(1)
-  val client = LatchClient(args.single(), { if (it.text == "event") event.countDown() }, { states.add(it) }).connect().get(12, TimeUnit.SECONDS)
+  val hooks = java.util.concurrent.atomic.AtomicInteger()
+  val hookFailures = java.util.concurrent.atomic.AtomicInteger()
+  val client = LatchClient(args.single(), { if (it.text == "event") event.countDown() }, { states.add(it) },
+    { if (it.message == "hook failure") hookFailures.incrementAndGet() },
+    { builder ->
+      val attempt = hooks.incrementAndGet()
+      if (attempt == 1) throw IllegalStateException("hook failure")
+      builder.header("X-Latch-Attempt", attempt.toString())
+    }).connect().get(16, TimeUnit.SECONDS)
   try {
     val packet = Packet("sent", State.Open, null, blob = byteArrayOf(1), history = emptyList(), tags = emptyMap())
     try { client.chatSendMessage(packet).get(8, TimeUnit.SECONDS); error("sent request survived disconnect") }
@@ -221,7 +236,8 @@ fun main(args: Array<String>) {
     check(offline.get(12, TimeUnit.SECONDS).text == "offline")
     check(event.await(8, TimeUnit.SECONDS))
     check(states.count { it == ConnectionState.CONNECTED } == 2)
-    check(states.count { it == ConnectionState.CONNECTING } >= 3)
+    check(hooks.get() == 4 && hookFailures.get() == 1)
+    check(states.count { it == ConnectionState.CONNECTING } >= 4)
     check(states.contains(ConnectionState.OFFLINE))
   } finally { client.close() }
   println("Kotlin reconnect passed")

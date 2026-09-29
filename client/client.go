@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"fmt"
+	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -68,13 +69,17 @@ type Conn struct {
 //
 // Connect does not start reading further frames — the caller (generated
 // code) must finish wiring up event handlers via RegisterEvent and then
-// call Start.
-func Connect(ctx context.Context, rawURL, version string) (*Conn, error) {
+// call Start. An optional header supplies HTTP headers for the WebSocket upgrade.
+func Connect(ctx context.Context, rawURL, version string, headers ...http.Header) (*Conn, error) {
 	target, err := addVersionQuery(rawURL, version)
 	if err != nil {
 		return nil, fmt.Errorf("latch: build connection URL: %w", err)
 	}
-	ws, _, err := websocket.Dial(ctx, target, nil)
+	var opts *websocket.DialOptions
+	if len(headers) > 0 {
+		opts = &websocket.DialOptions{HTTPHeader: headers[0]}
+	}
+	ws, _, err := websocket.Dial(ctx, target, opts)
 	if err != nil {
 		return nil, fmt.Errorf("latch: dial: %w", err)
 	}

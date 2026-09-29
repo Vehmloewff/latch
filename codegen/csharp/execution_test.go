@@ -135,10 +135,16 @@ func socketPacket(t *testing.T, text string) []byte {
 	return b
 }
 
-func TestGeneratedCSharpReconnect(t *testing.T) {
+func TestGeneratedCSharpRequestHeadersAndReconnect(t *testing.T) {
 	var attempts atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
+		if got := r.Header.Get("X-Latch-Attempt"); got != fmt.Sprint(n+1) {
+			t.Errorf("attempt %d header = %q", n, got)
+		}
+		if r.URL.Query().Get("foo") != "bar" || r.URL.Query().Get("version") != "v1" || len(r.URL.Query()["version"]) != 1 {
+			t.Errorf("attempt %d query = %q", n, r.URL.RawQuery)
+		}
 		if n == 1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
@@ -183,7 +189,7 @@ func TestGeneratedCSharpReconnect(t *testing.T) {
 	})
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	runCSharp(t, reconnectHarness, "ws"+strings.TrimPrefix(server.URL, "http"))
+	runCSharp(t, reconnectHarness, "ws"+strings.TrimPrefix(server.URL, "http")+"?foo=bar&version=old")
 	if attempts.Load() != 3 {
 		t.Fatalf("attempts: %d", attempts.Load())
 	}

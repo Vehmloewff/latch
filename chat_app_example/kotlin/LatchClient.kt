@@ -169,7 +169,8 @@ internal class LatchTransport private constructor(
   private val uri: URI,
   private val onEvent: (ByteArray) -> Unit,
   private val onFailure: ((Throwable) -> Unit)?,
-  private val onStateChange: ((ConnectionState) -> Unit)?
+  private val onStateChange: ((ConnectionState) -> Unit)?,
+  private val onRequestConstructed: ((WebSocket.Builder) -> Unit)?
 ) : AutoCloseable {
   private data class Request(val id: String, val frame: ByteArray, val result: CompletableFuture<ByteArray>)
   private val lock = Any()
@@ -256,7 +257,11 @@ internal class LatchTransport private constructor(
       }
     }
     try {
-      client.newWebSocketBuilder().buildAsync(uri, listener).whenComplete { ws, err ->
+      val builder = client.newWebSocketBuilder()
+      if (synchronized(lock) { closed || generation != attemptId }) return
+      onRequestConstructed?.invoke(builder)
+      if (synchronized(lock) { closed || generation != attemptId }) return
+      builder.buildAsync(uri, listener).whenComplete { ws, err ->
         if (err != null) failedAttempt(generation, err)
         else if (synchronized(lock) { closed || generation != attemptId || state == ConnectionState.OFFLINE }) ws.abort()
       }
@@ -318,7 +323,8 @@ internal class LatchTransport private constructor(
   }
   companion object {
     fun connect(url: String, version: String, onEvent: (ByteArray) -> Unit,
-      onFailure: ((Throwable) -> Unit)?, onStateChange: ((ConnectionState) -> Unit)?): CompletableFuture<LatchTransport> {
+      onFailure: ((Throwable) -> Unit)?, onStateChange: ((ConnectionState) -> Unit)?,
+      onRequestConstructed: ((WebSocket.Builder) -> Unit)?): CompletableFuture<LatchTransport> {
       val uri = try {
         val u = URI(url)
         require(u.scheme == "ws" || u.scheme == "wss") { "Latch URL must use ws or wss" }
@@ -328,7 +334,7 @@ internal class LatchTransport private constructor(
         try { onStateChange?.invoke(ConnectionState.CONNECTING); onStateChange?.invoke(ConnectionState.OFFLINE) } catch (_: Throwable) { }
         return CompletableFuture.failedFuture(e)
       }
-      val transport = LatchTransport(uri, onEvent, onFailure, onStateChange)
+      val transport = LatchTransport(uri, onEvent, onFailure, onStateChange, onRequestConstructed)
       transport.initial.whenComplete { _, _ -> if (transport.initial.isCancelled) transport.close() }
       transport.attempt()
       return transport.initial
@@ -574,9 +580,10 @@ class SendMessageResponse(
 
 class LatchClient(private val url: String, private val onEvent: (Event) -> Unit,
   private val onConnectionStateChange: ((ConnectionState) -> Unit)? = null,
-  private val onEventError: ((Throwable) -> Unit)? = null) {
+  private val onEventError: ((Throwable) -> Unit)? = null,
+  private val onRequestConstructed: ((java.net.http.WebSocket.Builder) -> Unit)? = null) {
   fun connect(): java.util.concurrent.CompletableFuture<ConnectedLatchClient> =
-    LatchTransport.connect(url, "1", { payload -> onEvent(Event.fromLatch(LatchBinary.decode(payload))) }, onEventError, onConnectionStateChange).thenApply { ConnectedLatchClient(it) }
+    LatchTransport.connect(url, "1", { payload -> onEvent(Event.fromLatch(LatchBinary.decode(payload))) }, onEventError, onConnectionStateChange, onRequestConstructed).thenApply { ConnectedLatchClient(it) }
 }
 
 class ConnectedLatchClient internal constructor(private val transport: LatchTransport) : AutoCloseable {

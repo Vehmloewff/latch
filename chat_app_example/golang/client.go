@@ -6,6 +6,7 @@ package chatappclient
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ type LatchClient struct {
 	url                     string
 	onEvent                 func(Event)
 	onConnectionStateChange func(ConnectionState)
+	onRequestConstructed    func(http.Header)
 }
 
 // ConnectionState describes the lifecycle of a connection.
@@ -94,12 +96,24 @@ func New(url string, onEvent func(Event), onConnectionStateChange ...func(Connec
 	if len(onConnectionStateChange) > 0 {
 		onState = onConnectionStateChange[0]
 	}
-	return &LatchClient{url: url, onEvent: onEvent, onConnectionStateChange: onState}
+	return NewWithOptions(url, onEvent, Options{OnConnectionStateChange: onState})
+}
+
+// Options configures connection callbacks. OnRequestConstructed receives fresh HTTP headers
+// before every WebSocket dial, including retries and reconnects.
+type Options struct {
+	OnConnectionStateChange func(ConnectionState)
+	OnRequestConstructed    func(http.Header)
+}
+
+// NewWithOptions creates a LatchClient with optional connection callbacks.
+func NewWithOptions(url string, onEvent func(Event), opts Options) *LatchClient {
+	return &LatchClient{url: url, onEvent: onEvent, onConnectionStateChange: opts.OnConnectionStateChange, onRequestConstructed: opts.OnRequestConstructed}
 }
 
 // Connect opens a live ConnectedLatchClient.
 func (c *LatchClient) Connect(ctx context.Context) (*ConnectedLatchClient, error) {
-	session := &connectionSession{changed: make(chan struct{}), done: make(chan struct{}), onState: c.onConnectionStateChange}
+	session := &connectionSession{changed: make(chan struct{}), done: make(chan struct{}), onState: c.onConnectionStateChange, onRequestConstructed: c.onRequestConstructed}
 	session.setState(ConnectionStateConnecting)
 	conn, err := session.dial(ctx, c.url, "1")
 	if err != nil {
@@ -156,12 +170,13 @@ func (c *ConnectedLatchClient) Closed() <-chan struct{} {
 
 // connectionSession owns the replaceable transport. Closed signals intentional shutdown only.
 type connectionSession struct {
-	mu      sync.Mutex
-	conn    *client.Conn
-	changed chan struct{}
-	done    chan struct{}
-	stopped bool
-	onState func(ConnectionState)
+	mu                   sync.Mutex
+	conn                 *client.Conn
+	changed              chan struct{}
+	done                 chan struct{}
+	stopped              bool
+	onState              func(ConnectionState)
+	onRequestConstructed func(http.Header)
 }
 
 func (s *connectionSession) signal() { close(s.changed); s.changed = make(chan struct{}) }
@@ -175,7 +190,11 @@ func (s *connectionSession) dial(ctx context.Context, url, version string) (*cli
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		conn, err := client.Connect(ctx, url, version)
+		headers := make(http.Header)
+		if s.onRequestConstructed != nil {
+			s.onRequestConstructed(headers)
+		}
+		conn, err := client.Connect(ctx, url, version, headers)
 		if err == nil {
 			return conn, nil
 		}
