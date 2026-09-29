@@ -480,6 +480,12 @@ func TestServerAdmissionOriginAndShutdown(t *testing.T) {
 		server := newCoreServer(t, latch.Options{ProtocolVersion: "1"})
 		server.OnDisconnect(func(coreState) { close(disconnected) })
 		httpServer, client := serveCore(t, server, "?version=1")
+		// Dial only waits for the HTTP upgrade, not for OnConnect to finish.
+		// A response confirms this is an active, fully registered connection.
+		client.Request("ready", "unknown_method", coreRequest{})
+		if response := client.Recv(); response.Type != wire.FrameError {
+			t.Fatalf("readiness response = %v, want error", response.Type)
+		}
 
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		if err := server.Close(closeCtx); err != nil {
@@ -505,6 +511,50 @@ func TestServerAdmissionOriginAndShutdown(t *testing.T) {
 			t.Fatalf("post-shutdown status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
 		}
 	})
+}
+
+func TestShutdownDuringOnConnectCleansUpState(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	disconnected := make(chan coreState, 1)
+	server := latch.New[coreState](latch.Options{ProtocolVersion: "1"})
+	server.OnConnect(func(context.Context, latch.Emitter[coreEvent], *latch.Conn) (coreState, error) {
+		close(entered)
+		<-release
+		return coreState{Token: "connected"}, nil
+	})
+	server.OnDisconnect(func(state coreState) { disconnected <- state })
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"?version=1", nil)
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	// The WebSocket peer must read the close frame to complete the handshake.
+	go func() { _, _, _ = ws.Read(ctx) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		close(release)
+		t.Fatal("OnConnect did not start")
+	}
+	if err := server.Close(ctx); err != nil {
+		close(release)
+		t.Fatalf("Server.Close: %v", err)
+	}
+	close(release)
+	select {
+	case state := <-disconnected:
+		if state.Token != "connected" {
+			t.Fatalf("OnDisconnect state = %+v", state)
+		}
+	case <-ctx.Done():
+		t.Fatal("OnDisconnect was skipped after shutdown raced OnConnect")
+	}
 }
 
 func TestServeHTTPRejectsMisconfiguredServer(t *testing.T) {

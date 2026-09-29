@@ -351,10 +351,34 @@ func (s *Server[S]) finalizeLocked() error {
 	return nil
 }
 
-func (s *Server[S]) track(c *Conn) {
+// track admits a connection only while shutdown has not begun. A WebSocket
+// upgrade can complete before its ServeHTTP goroutine gets to this point.
+func (s *Server[S]) track(c *Conn) bool {
 	s.connsMu.Lock()
 	defer s.connsMu.Unlock()
+	select {
+	case <-s.shuttingDown:
+		return false
+	case <-c.closed:
+		return false
+	default:
+	}
 	s.conns[c] = struct{}{}
+	return true
+}
+
+// setState pairs a successful OnConnect result with its connection. If Close
+// raced OnConnect, untrack has already run and the state still needs cleanup.
+func (s *Server[S]) setState(c *Conn, state any) {
+	s.connsMu.Lock()
+	_, tracked := s.conns[c]
+	if tracked {
+		s.states[c] = state
+	}
+	s.connsMu.Unlock()
+	if !tracked && s.onDisconnect != nil {
+		s.callOnDisconnect(c.Context(), state)
+	}
 }
 
 func (s *Server[S]) untrack(c *Conn) {
@@ -382,11 +406,10 @@ func (s *Server[S]) callOnDisconnect(ctx context.Context, state any) {
 // closes every active connection, runs their OnClose callbacks, and waits
 // for all of that to finish or for ctx to be done, whichever comes first.
 func (s *Server[S]) Close(ctx context.Context) error {
+	s.connsMu.Lock()
 	s.shutdownOnce.Do(func() {
 		close(s.shuttingDown)
 	})
-
-	s.connsMu.Lock()
 	conns := make([]*Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)

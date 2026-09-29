@@ -90,7 +90,10 @@ func (s *Server[S]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn := newConn(s, ws, r)
 	go conn.writePump()
 
-	s.track(conn)
+	if !s.track(conn) {
+		_ = conn.Close(CloseGoingAway, "server shutting down")
+		return
+	}
 	if s.onConnect != nil {
 		state, err := s.callOnConnect(conn)
 		if err != nil {
@@ -103,19 +106,15 @@ func (s *Server[S]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(ClosePolicyViolation, "connection rejected")
 			return
 		}
-		select {
-		case <-conn.closed:
-			return
-		default:
-		}
-		s.connsMu.Lock()
-		s.states[conn] = state
-		s.connsMu.Unlock()
+		s.setState(conn, state)
 	} else {
 		var zero S
-		s.connsMu.Lock()
-		s.states[conn] = zero
-		s.connsMu.Unlock()
+		s.setState(conn, zero)
+	}
+	select {
+	case <-conn.closed:
+		return
+	default:
 	}
 	s.logf(conn.ctx, slog.LevelInfo, "latch: connection accepted")
 
