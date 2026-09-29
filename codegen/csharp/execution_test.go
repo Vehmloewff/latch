@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,12 @@ var earlyEventHarness string
 
 //go:embed dispose_harness_test.cs
 var disposeHarness string
+
+//go:embed reconnect_harness_test.cs
+var reconnectHarness string
+
+//go:embed cancellation_harness_test.cs
+var cancellationHarness string
 
 // The same generated file is compiled for both suites; no checked-in copy of the runtime is used.
 func runCSharp(t *testing.T, harness string, args ...string) {
@@ -126,6 +133,102 @@ func socketPacket(t *testing.T, text string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestGeneratedCSharpRequestHeadersAndReconnect(t *testing.T) {
+	var attempts atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if got := r.Header.Get("X-Latch-Attempt"); got != fmt.Sprint(n+1) {
+			t.Errorf("attempt %d header = %q", n, got)
+		}
+		if r.URL.Query().Get("foo") != "bar" || r.URL.Query().Get("version") != "v1" || len(r.URL.Query()["version"]) != 1 {
+			t.Errorf("attempt %d query = %q", n, r.URL.RawQuery)
+		}
+		if n == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		defer ws.CloseNow()
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		_, raw, err := ws.Read(ctx)
+		if err != nil {
+			t.Errorf("read: %v", err)
+			return
+		}
+		var req wire.Envelope
+		if err := req.UnmarshalBinary(raw); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if n == 2 {
+			ws.Close(websocket.StatusNormalClosure, "drop")
+			return
+		}
+		if n != 3 {
+			t.Errorf("unexpected attempt %d", n)
+			return
+		}
+		resp, _ := (wire.Envelope{Type: wire.FrameResponse, ID: req.ID, Payload: req.Payload}).MarshalBinary()
+		if err := ws.Write(ctx, websocket.MessageBinary, resp); err != nil {
+			t.Errorf("response: %v", err)
+			return
+		}
+		event, _ := (wire.Envelope{Type: wire.FrameEvent, Payload: socketPacket(t, "event")}).MarshalBinary()
+		if err := ws.Write(ctx, websocket.MessageBinary, event); err != nil {
+			t.Errorf("event: %v", err)
+			return
+		}
+		<-ctx.Done()
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	runCSharp(t, reconnectHarness, "ws"+strings.TrimPrefix(server.URL, "http")+"?foo=bar&version=old")
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts: %d", attempts.Load())
+	}
+}
+
+func TestGeneratedCSharpInitialCancellation(t *testing.T) {
+	var retries, handshakes atomic.Int32
+	handshakeCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/retry":
+			retries.Add(1)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		case "/handshake":
+			handshakes.Add(1)
+			select {
+			case <-r.Context().Done():
+				close(handshakeCanceled)
+			case <-time.After(7 * time.Second):
+				t.Error("active handshake was not canceled")
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	runCSharp(t, cancellationHarness, url+"/retry", url+"/handshake")
+	if got := retries.Load(); got != 1 {
+		t.Errorf("attempts after cancellation during retry delay = %d, want 1", got)
+	}
+	if got := handshakes.Load(); got != 1 {
+		t.Errorf("active handshake attempts = %d, want 1", got)
+	}
+	select {
+	case <-handshakeCanceled:
+	case <-time.After(2 * time.Second):
+		t.Error("active handshake remained open after cancellation")
+	}
 }
 
 func TestGeneratedCSharpWebSocketLifecycle(t *testing.T) {

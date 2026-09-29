@@ -131,24 +131,31 @@ fun main() {
       else -> error("unexpected WebSocket method: ${method.name}")
     }
   } as WebSocket
-  fun transport(): LatchTransport = LatchTransport::class.java.getDeclaredConstructor(WebSocket::class.java).apply { isAccessible = true }.newInstance(socket)
-  val conn = transport()
-  conn.dispatch(LatchEnvelope(6, payload = LatchBinary.encode("early")))
   val events = mutableListOf<String>()
-  conn.onEvent = { events.add(LatchValue.string(LatchBinary.decode(it))) }
+  fun transport(receiver: (ByteArray) -> Unit = { events.add(LatchValue.string(LatchBinary.decode(it))) }): LatchTransport {
+    val conn = LatchTransport::class.java.getDeclaredConstructor(java.net.URI::class.java, kotlin.jvm.functions.Function1::class.java,
+      kotlin.jvm.functions.Function1::class.java, kotlin.jvm.functions.Function1::class.java,
+      kotlin.jvm.functions.Function1::class.java).apply { isAccessible = true }
+      .newInstance(java.net.URI("ws://localhost"), receiver, { e: Throwable -> sendError = e }, null, null)
+    LatchTransport::class.java.getDeclaredField("socket").apply { isAccessible = true }.set(conn, socket)
+    return conn
+  }
+  val conn = transport()
+  conn.dispatch(socket, LatchEnvelope(6, payload = LatchBinary.encode("early")))
   check(events == listOf("early"))
-  conn.onFailure = { sendError = it }
   val response = conn.call("ping", byteArrayOf(0))
   val frame = LatchEnvelope.decode(sent.single())
   check(frame.kind == 3 && frame.method == "ping" && frame.id == "1")
-  conn.dispatch(LatchEnvelope(4, id = frame.id, payload = byteArrayOf(0)))
+  conn.dispatch(socket, LatchEnvelope(4, id = frame.id, payload = byteArrayOf(0)))
   check(response.get(3, TimeUnit.SECONDS).contentEquals(byteArrayOf(0)))
-  val waiting = conn.call("ping", byteArrayOf(0))
-  conn.onEvent = { throw IllegalStateException("bad callback") }
-  conn.dispatch(LatchEnvelope(6, payload = byteArrayOf(0)))
+  val bad = transport { throw IllegalStateException("bad callback") }
+  val waiting = bad.call("ping", byteArrayOf(0))
+  bad.dispatch(socket, LatchEnvelope(6, payload = byteArrayOf(0)))
   rejected(waiting)
   check(sendError?.message == "bad callback" && aborted)
-  rejected(conn.call("ping", byteArrayOf(0)))
+  val offline = bad.call("ping", byteArrayOf(0))
+  check(!offline.isDone)
+  bad.close(); rejected(offline)
   failAsync = true; aborted = false
   val async = transport().call("ping", byteArrayOf(0))
   rejected(async); check(aborted)
@@ -163,7 +170,7 @@ fun main() {
   val count = sent.size
   check(next.isDone.not() && sent.size == count) // the second send waits for the first
   closing.close()
-  rejected(pending); rejected(next); check(!aborted)
+  rejected(pending); rejected(next); check(aborted)
   hold.complete(socket)
   check(sent.size == count) // queued sends must not run after close
   rejected(closing.call("ping", byteArrayOf(0)))

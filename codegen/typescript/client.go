@@ -61,20 +61,10 @@ func renderClientFields(p *protocol.Protocol, typeNames map[string]string) strin
 	return b.String()
 }
 
-// renderEventsField creates the one typed event stream on the generated
-// connected client.
-func renderEventsField(p *protocol.Protocol, typeNames map[string]string) (string, error) {
-	ref, ok := p.EventRef()
-	if !ok {
-		return "", fmt.Errorf("protocol has no event type")
-	}
-	return fmt.Sprintf("  readonly events = new EventStream<%s>();\n", tsType(ref, typeNames)), nil
-}
-
 func renderDispatchEvent(eventType, eventTypeWireType string) string {
 	var b strings.Builder
 	b.WriteString("  protected dispatchEvent(env: { payload?: Uint8Array }): void {\n")
-	fmt.Fprintf(&b, "    this.events._emit(decodeTyped(env.payload ?? new Uint8Array(), %s, __latchWireTypes) as %s);\n", eventTypeWireType, eventType)
+	fmt.Fprintf(&b, "    this.onEvent(decodeTyped(env.payload ?? new Uint8Array(), %s, __latchWireTypes) as %s);\n", eventTypeWireType, eventType)
 	b.WriteString("  }\n")
 	return b.String()
 }
@@ -83,11 +73,11 @@ func renderDispatchEvent(eventType, eventTypeWireType string) string {
 // a typed connect()) and "Connected<Name>Client" (the typed RPC/event
 // surface) classes.
 func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[string]string) (string, error) {
-	eventsField, err := renderEventsField(p, typeNames)
-	if err != nil {
-		return "", err
+	eventRef, ok := p.EventRef()
+	if !ok {
+		return "", fmt.Errorf("protocol has no event type")
 	}
-	eventRef, _ := p.EventRef()
+	eventType := tsType(eventRef, typeNames)
 
 	connectedName := "Connected" + clientName
 
@@ -97,23 +87,28 @@ func generateClientFile(p *protocol.Protocol, clientName string, typeNames map[s
 	if len(typeImports) > 0 {
 		b.WriteString(fmt.Sprintf("import type { %s } from \"./types\";\n", strings.Join(typeImports, ", ")))
 	}
-	b.WriteString("import { BaseConnection, type ClientOptions, EventStream, connectSocket } from \"./runtime\";\n\n")
+	b.WriteString("import { BaseConnection, type ClientOptions, connectSocket } from \"./runtime\";\n\n")
 
 	fmt.Fprintf(&b, "export class %s {\n", clientName)
-	b.WriteString("  private options: ClientOptions;\n\n")
-	b.WriteString("  constructor(options: ClientOptions) {\n    this.options = options;\n  }\n\n")
+	fmt.Fprintf(&b, "  private readonly version = %q;\n", p.Version)
+	fmt.Fprintf(&b, "  private options: ClientOptions & { onEvent: (event: %s) => void };\n", eventType)
+	b.WriteString("  private state: ConnectionState = ConnectionState.Offline;\n  private stopped = false;\n  private retryTimer: ReturnType<typeof setTimeout> | undefined;\n  private wakeRetry: (() => void) | undefined;\n  private connecting = false;\n  private retrying = false;\n  private attempt?: AbortController;\n  private client?: BaseConnection;\n\n")
+	fmt.Fprintf(&b, "  constructor(options: ClientOptions & { onEvent: (event: %s) => void }) {\n    this.options = options;\n  }\n\n", eventType)
+	b.WriteString("  private setState(state: ConnectionState): void {\n    if (this.state === state) return;\n    this.state = state;\n    this.options.onConnectionStateChange?.(state);\n  }\n\n")
 	fmt.Fprintf(&b, "  async connect(): Promise<%s> {\n", connectedName)
-	fmt.Fprintf(&b, "    const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, %q);\n", p.Version)
-	fmt.Fprintf(&b, "    return new %s(handshake);\n", connectedName)
-	b.WriteString("  }\n")
+	b.WriteString("    if (this.connecting || this.client || this.stopped) {\n      throw new Error(\"Latch: client is already connecting or connected (or closed)\");\n    }\n    this.connecting = true;\n    this.setState(ConnectionState.Connecting);\n    while (!this.stopped) {\n    try {\n")
+	fmt.Fprintf(&b, "      this.attempt = new AbortController();\n      const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, %q, this.attempt.signal);\n", p.Version)
+	fmt.Fprintf(&b, "      const client = new %s(handshake, this.options.onEvent, () => this.disconnected(), () => this.stop());\n", connectedName)
+	b.WriteString("      if (this.stopped) { client.close(); break; }\n      this.client = client;\n      this.connecting = false;\n      this.setState(ConnectionState.Connected);\n      return client;\n    } catch (_) {\n      if (this.stopped) break;\n      this.setState(ConnectionState.Offline);\n      await this.delay();\n      if (!this.stopped) this.setState(ConnectionState.Connecting);\n    }\n    }\n    throw new LatchError(\"connection_closed\", \"the connection is closed\");\n")
+	b.WriteString("  }\n\n  /** Cancel initial connection attempts or permanently close the active client. */\n  close(): void {\n    this.stop();\n    this.client?.close();\n  }\n\n  private stop(): void {\n    if (this.stopped) return;\n    this.stopped = true;\n    this.attempt?.abort();\n    this.wakeRetry?.();\n    this.setState(ConnectionState.Offline);\n  }\n\n  private delay(): Promise<void> {\n    return new Promise(resolve => {\n      this.wakeRetry = () => { if (this.retryTimer) clearTimeout(this.retryTimer); this.wakeRetry = undefined; resolve(); };\n      this.retryTimer = setTimeout(() => this.wakeRetry?.(), 2000);\n    });\n  }\n\n  private disconnected(): void {\n    this.setState(ConnectionState.Offline);\n    if (this.stopped || !this.client || this.retrying) return;\n    this.retrying = true;\n    void this.retry();\n  }\n\n  private async retry(): Promise<void> {\n    await this.delay();\n    while (!this.stopped) {\n      this.setState(ConnectionState.Connecting);\n      try {\n        this.attempt = new AbortController();\n        const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, this.version, this.attempt.signal);\n        if (this.stopped) { handshake.ws.close(); return; }\n        if (!this.client?.reconnect(handshake)) {\n          if (this.stopped || this.client?.closed) return;\n          this.setState(ConnectionState.Offline);\n          await this.delay();\n          continue;\n        }\n        this.retrying = false;\n        this.setState(ConnectionState.Connected);\n        return;\n      } catch (_) {\n        if (this.stopped) return;\n        this.setState(ConnectionState.Offline);\n        await this.delay();\n      }\n    }\n  }\n")
 	b.WriteString("}\n\n")
 
 	fmt.Fprintf(&b, "export class %s extends BaseConnection {\n", connectedName)
 	b.WriteString(renderClientFields(p, typeNames))
 	b.WriteString("\n")
-	b.WriteString(eventsField)
-	b.WriteString("\n")
-	b.WriteString(renderDispatchEvent(tsType(eventRef, typeNames), wireTypeExpr(eventRef, typeNames)))
+	fmt.Fprintf(&b, "  private readonly onEvent: (event: %s) => void;\n\n", eventType)
+	fmt.Fprintf(&b, "  constructor(handshake: HandshakeResult, onEvent: (event: %s) => void, onClose: () => void, onShutdown: () => void = () => {}) {\n    super(handshake, onClose, onShutdown);\n    this.onEvent = onEvent;\n  }\n\n", eventType)
+	b.WriteString(renderDispatchEvent(eventType, wireTypeExpr(eventRef, typeNames)))
 	b.WriteString("}\n")
 
 	return b.String(), nil

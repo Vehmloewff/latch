@@ -137,6 +137,11 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 	wantClientSnippets := []string{
 		`class LatchClient {`,
 		`class ConnectedLatchClient extends BaseConnection {`,
+		`required this.onEvent`,
+		`ConnectionState.connecting`,
+		`ConnectionState.connected`,
+		`ConnectionState.offline`,
+		`onEvent(InvoiceUpdated.fromBinary(payload))`,
 		`Future<GetInvoiceResponse> billingInvoiceGet`,
 		`Future<UserGetResponse> userGet`,
 		`"billing.invoice.get"`,

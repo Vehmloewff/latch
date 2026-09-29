@@ -127,12 +127,15 @@ func TestGenerateProducesExpectedShapes(t *testing.T) {
 		`userGet(req: UserGetRequest): Promise<UserGetResponse>`,
 		`this.call<GetInvoiceResponse>("billing.invoice.get", req`,
 		`this.call<UserGetResponse>("user.get", req`,
-		`readonly events = new EventStream<InvoiceUpdated>()`,
+		`onEvent: (event: InvoiceUpdated) => void`,
+		`ConnectionState.Connecting`,
+		`ConnectionState.Connected`,
+		`ConnectionState.Offline`,
 		`export class LatchClient {`,
 		`export class ConnectedLatchClient extends BaseConnection {`,
 		`export function encodeEnvelope(envelope: Envelope): Uint8Array`,
 		`export function decodeEnvelope(data: Uint8Array): Envelope`,
-		`this.ws.send(encodeEnvelope({ type: "request"`,
+		`this.ws.send(frame)`,
 		`decodeTyped(data, { kind: "named", name: "GetInvoiceResponse" }`,
 	}
 	for _, want := range wantClientSnippets {

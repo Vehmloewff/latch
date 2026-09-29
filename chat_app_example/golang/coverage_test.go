@@ -17,14 +17,18 @@ func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	connected, err := New(url).Connect(ctx)
+	events := make(chan Event, 4)
+	states := make(chan ConnectionState, 3)
+	connected, err := New(url, func(event Event) { events <- event }, func(state ConnectionState) { states <- state }).Connect(ctx)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	defer connected.Close()
 
-	if connected.Events() == nil {
-		t.Fatal("Events() returned nil channel")
+	for _, want := range []ConnectionState{ConnectionStateConnecting, ConnectionStateConnected} {
+		if got := nextGeneratedState(t, states); got != want {
+			t.Fatalf("state = %q, want %q", got, want)
+		}
 	}
 
 	rooms, err := connected.ChatListRooms(ctx, ListRoomsRequest{})
@@ -42,7 +46,7 @@ func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {
 	if joined.Room != "general" || len(joined.MemberIDs) != 1 || joined.MemberIDs[0] != "alice" {
 		t.Fatalf("join response = %#v, want Alice in general", joined)
 	}
-	if event := nextGeneratedEvent(t, connected.Events()); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "alice" {
+	if event := nextGeneratedEvent(t, events); event.Kind != "presence" || event.Presence == nil || event.Presence.UserID != "alice" {
 		t.Fatalf("join event = %#v, want Alice presence", event)
 	}
 
@@ -61,7 +65,7 @@ func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {
 	if sent.Message.Room != "general" || sent.Message.SenderID != "alice" || sent.Message.Text != "hello" || sent.Message.ID == 0 {
 		t.Fatalf("send response = %#v, want populated message", sent)
 	}
-	if event := nextGeneratedEvent(t, connected.Events()); event.Kind != "message" || event.Message == nil || event.Message.Message.Text != "hello" {
+	if event := nextGeneratedEvent(t, events); event.Kind != "message" || event.Message == nil || event.Message.Message.Text != "hello" {
 		t.Fatalf("message event = %#v, want hello message", event)
 	}
 
@@ -80,6 +84,35 @@ func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {
 	case <-connected.Closed():
 	case <-time.After(time.Second):
 		t.Fatal("Closed channel was not closed after Close")
+	}
+	if got := nextGeneratedState(t, states); got != ConnectionStateOffline {
+		t.Fatalf("state after close = %q, want offline", got)
+	}
+}
+
+func TestConnectionFailureReportsOffline(t *testing.T) {
+	states := make(chan ConnectionState, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := New("://invalid", nil, func(state ConnectionState) { states <- state }).Connect(ctx)
+	if err == nil {
+		t.Fatal("expected invalid URL to fail")
+	}
+	for _, want := range []ConnectionState{ConnectionStateConnecting, ConnectionStateOffline} {
+		if got := nextGeneratedState(t, states); got != want {
+			t.Fatalf("state = %q, want %q", got, want)
+		}
+	}
+}
+
+func nextGeneratedState(t *testing.T, states <-chan ConnectionState) ConnectionState {
+	t.Helper()
+	select {
+	case state := <-states:
+		return state
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for connection state")
+		return ""
 	}
 }
 

@@ -6,11 +6,11 @@ static class Program
 {
     static async Task Main(string[] args)
     {
-        var client = await new LatchClient(args.Single()).ConnectAsync().WaitAsync(TimeSpan.FromSeconds(8));
+        var received = new TaskCompletionSource<Packet>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var states = new System.Collections.Generic.List<ConnectionState>();
+        var client = await new LatchClient(args.Single(), packet => received.TrySetResult(packet), state => states.Add(state)).ConnectAsync().WaitAsync(TimeSpan.FromSeconds(8));
         try
         {
-            var received = new TaskCompletionSource<Packet>(TaskCreationOptions.RunContinuationsAsynchronously);
-            client.OnEvent = packet => received.TrySetResult(packet);
             var request = new Packet { Text = "pending", State = State.Open, Blob = new byte[] { 1 }, History = new(), Tags = new() };
             var pending = client.ChatSendMessageAsync(request);
             // The server sends this event only after reading the request; it
@@ -18,6 +18,8 @@ static class Program
             if ((await received.Task.WaitAsync(TimeSpan.FromSeconds(8))).Text != "received")
                 throw new Exception("server did not receive pending request");
             await client.DisposeAsync();
+            if (!states.SequenceEqual(new[] { ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline }))
+                throw new Exception("incorrect dispose states");
             try { await pending.WaitAsync(TimeSpan.FromSeconds(8)); throw new Exception("pending RPC survived DisposeAsync"); }
             catch (LatchError error)
             {

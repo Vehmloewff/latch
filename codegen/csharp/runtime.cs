@@ -260,188 +260,219 @@ internal sealed class LatchEnvelope
     }
 }
 
+public enum ConnectionState { Connecting, Connected, Offline }
+
 internal sealed class LatchTransport : IAsyncDisposable
 {
     private const int MaxFrame = 1 << 24;
-    private readonly System.Net.WebSockets.ClientWebSocket _socket;
-    private readonly System.Threading.CancellationTokenSource _stop = new System.Threading.CancellationTokenSource();
-    private readonly System.Threading.SemaphoreSlim _sendLock = new System.Threading.SemaphoreSlim(1, 1);
-    private readonly object _gate = new object();
-    private readonly Dictionary<string, TaskCompletionSource<byte[]>> _pending = new Dictionary<string, TaskCompletionSource<byte[]>>();
-    private readonly Queue<byte[]> _earlyEvents = new Queue<byte[]>();
-    private Action<byte[]>? _onEvent;
-    private Action<Exception>? _onFailure;
-    private Exception? _failure;
-    private bool _failureNotified;
+    private readonly Uri _uri;
+    private readonly System.Threading.CancellationTokenSource _stop = new();
+    private readonly System.Threading.SemaphoreSlim _sendLock = new(1, 1);
+    private readonly object _gate = new();
+    private readonly Queue<(string ID, byte[] Frame, TaskCompletionSource<byte[]> Waiter)> _queued = new();
+    private readonly Dictionary<string, TaskCompletionSource<byte[]>> _pending = new();
+    private readonly Action<byte[]> _onEvent;
+    private readonly Action<Exception>? _onFailure;
+    private readonly Action<ConnectionState>? _onStateChange;
+    private readonly Action<System.Net.WebSockets.ClientWebSocketOptions>? _onRequestConstructed;
+    private readonly TaskCompletionSource<LatchTransport> _initial = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private System.Net.WebSockets.ClientWebSocket? _socket;
+    private System.Net.WebSockets.ClientWebSocket? _attempt;
     private long _nextID;
     private bool _closed;
+    private ConnectionState _state = ConnectionState.Connecting;
 
-    internal Action<byte[]>? OnEvent
-    {
-        get { lock (_gate) return _onEvent; }
-        set
-        {
-            byte[][] queued;
-            lock (_gate)
-            {
-                _onEvent = value;
-                queued = value == null ? Array.Empty<byte[]>() : _earlyEvents.ToArray();
-                if (value != null) _earlyEvents.Clear();
-            }
-            if (value != null) foreach (var payload in queued) DeliverEvent(value, payload);
-        }
-    }
-    internal Action<Exception>? OnFailure
-    {
-        get { lock (_gate) return _onFailure; }
-        set
-        {
-            Exception? failure;
-            lock (_gate)
-            {
-                _onFailure = value;
-                failure = value != null && !_failureNotified ? _failure : null;
-                if (failure != null) _failureNotified = true;
-            }
-            if (value != null && failure != null)
-                try { value(failure); } catch (Exception) { /* The connection is already closed. */ }
-        }
-    }
-    private LatchTransport(System.Net.WebSockets.ClientWebSocket socket) => _socket = socket;
+    private LatchTransport(Uri uri, Action<byte[]> onEvent, Action<Exception>? onFailure, Action<ConnectionState>? onStateChange,
+        Action<System.Net.WebSockets.ClientWebSocketOptions>? onRequestConstructed)
+    { _uri = uri; _onEvent = onEvent; _onFailure = onFailure; _onStateChange = onStateChange; _onRequestConstructed = onRequestConstructed; }
 
-    internal static async Task<LatchTransport> ConnectAsync(string url, string version)
+    internal static async Task<LatchTransport> ConnectAsync(string url, string version, Action<byte[]> onEvent,
+        Action<Exception>? onFailure, Action<ConnectionState>? onStateChange,
+        Action<System.Net.WebSockets.ClientWebSocketOptions>? onRequestConstructed,
+        System.Threading.CancellationToken cancellationToken = default)
     {
-        var target = new UriBuilder(url);
-        if (target.Scheme != "ws" && target.Scheme != "wss")
-            throw new ArgumentException("Latch URL must use ws or wss", nameof(url));
-        // Preserve unrelated query parameters while replacing any existing version.
-        var parts = target.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(part => Uri.UnescapeDataString(part.Split('=')[0].Replace("+", " ")) != "version");
-        target.Query = string.Join("&", parts.Append("version=" + Uri.EscapeDataString(version)));
-        var socket = new System.Net.WebSockets.ClientWebSocket();
+        cancellationToken.ThrowIfCancellationRequested();
+        onStateChange?.Invoke(ConnectionState.Connecting);
+        Uri uri;
         try
         {
-            await socket.ConnectAsync(target.Uri, System.Threading.CancellationToken.None).ConfigureAwait(false);
-            var transport = new LatchTransport(socket);
-            _ = transport.ReadLoopAsync();
-            return transport;
+            var target = new UriBuilder(url);
+            if (target.Scheme != "ws" && target.Scheme != "wss")
+                throw new ArgumentException("Latch URL must use ws or wss", nameof(url));
+            var parts = target.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => Uri.UnescapeDataString(part.Split('=')[0].Replace("+", " ")) != "version");
+            target.Query = string.Join("&", parts.Append("version=" + Uri.EscapeDataString(version)));
+            uri = target.Uri;
         }
-        catch { socket.Dispose(); throw; }
+        catch
+        {
+            try { onStateChange?.Invoke(ConnectionState.Offline); } catch { }
+            throw;
+        }
+        var transport = new LatchTransport(uri, onEvent, onFailure, onStateChange, onRequestConstructed);
+        // The token governs only initial connection. After success, the connected client
+        // owns its transport and must be disposed explicitly.
+        using var registration = cancellationToken.Register(() =>
+        {
+            if (transport._initial.TrySetCanceled(cancellationToken))
+                _ = transport.DisposeAsync();
+        });
+        if (!cancellationToken.IsCancellationRequested) _ = transport.RunAsync();
+        return await transport._initial.Task.ConfigureAwait(false);
     }
 
-    internal async Task<byte[]> CallAsync(string method, byte[] payload)
+    internal Task<byte[]> CallAsync(string method, byte[] payload)
     {
-        TaskCompletionSource<byte[]> waiter;
-        string id;
         lock (_gate)
         {
-            if (_closed) throw new LatchError("connection_closed", "connection closed");
-            id = System.Threading.Interlocked.Increment(ref _nextID).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pending.Add(id, waiter);
+            if (_closed) return Task.FromException<byte[]>(new LatchError("connection_closed", "connection closed"));
+            var id = System.Threading.Interlocked.Increment(ref _nextID).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var frame = new LatchEnvelope { Kind = 3, ID = id, Method = method, Payload = payload }.Encode();
+            _queued.Enqueue((id, frame, waiter));
+            if (_socket != null) _ = FlushAsync(_socket);
+            return waiter.Task;
         }
+    }
+
+    private async Task FlushAsync(System.Net.WebSockets.ClientWebSocket socket)
+    {
         try
         {
-            var frame = new LatchEnvelope { Kind = 3, ID = id, Method = method, Payload = payload }.Encode();
             await _sendLock.WaitAsync(_stop.Token).ConfigureAwait(false);
             try
             {
-                if (_stop.IsCancellationRequested) throw new LatchError("connection_closed", "connection closed");
-                await _socket.SendAsync(new ArraySegment<byte>(frame), System.Net.WebSockets.WebSocketMessageType.Binary, true, _stop.Token).ConfigureAwait(false);
+                while (true)
+                {
+                    (string ID, byte[] Frame, TaskCompletionSource<byte[]> Waiter) request;
+                    lock (_gate)
+                    {
+                        if (_socket != socket || _closed || _queued.Count == 0) return;
+                        request = _queued.Dequeue();
+                        // An attempted send is ambiguous even if it throws; never replay it.
+                        _pending.Add(request.ID, request.Waiter);
+                    }
+                    await socket.SendAsync(new ArraySegment<byte>(request.Frame), System.Net.WebSockets.WebSocketMessageType.Binary, true, _stop.Token).ConfigureAwait(false);
+                }
             }
             finally { _sendLock.Release(); }
         }
-        catch (Exception error)
-        {
-            Fail(error);
-        }
-        return await waiter.Task.ConfigureAwait(false);
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        catch (Exception error) { Fail(socket, error); }
     }
 
-    private async Task ReadLoopAsync()
+    private async Task RunAsync()
+    {
+        bool first = true;
+        while (true)
+        {
+            lock (_gate) { if (_closed) return; _state = ConnectionState.Connecting; }
+            if (first) first = false;
+            else Notify(ConnectionState.Connecting);
+            using var socket = new System.Net.WebSockets.ClientWebSocket();
+            lock (_gate) { if (_closed) return; _attempt = socket; }
+            try
+            {
+                _stop.Token.ThrowIfCancellationRequested();
+                _onRequestConstructed?.Invoke(socket.Options);
+                _stop.Token.ThrowIfCancellationRequested();
+                await socket.ConnectAsync(_uri, _stop.Token).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    if (_closed) return;
+                    _socket = socket;
+                    _state = ConnectionState.Connected;
+                }
+                Notify(ConnectionState.Connected);
+                _initial.TrySetResult(this);
+                _ = FlushAsync(socket);
+                await ReadLoopAsync(socket).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested) { return; }
+            catch (Exception error) { Fail(socket, error); }
+            lock (_gate) { if (_attempt == socket) _attempt = null; if (_closed) return; }
+            try { await Task.Delay(TimeSpan.FromSeconds(2), _stop.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private async Task ReadLoopAsync(System.Net.WebSockets.ClientWebSocket socket)
     {
         var chunk = new byte[8192];
-        try
+        while (!_stop.IsCancellationRequested)
         {
-            while (!_stop.IsCancellationRequested)
+            using var message = new System.IO.MemoryStream();
+            System.Net.WebSockets.WebSocketReceiveResult result;
+            do
             {
-                using var message = new System.IO.MemoryStream();
-                System.Net.WebSockets.WebSocketReceiveResult result;
-                do
-                {
-                    result = await _socket.ReceiveAsync(new ArraySegment<byte>(chunk), _stop.Token).ConfigureAwait(false);
-                    if (result.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
-                        throw new LatchError("connection_closed", "connection closed: " + _socket.CloseStatus + " " + _socket.CloseStatusDescription);
-                    if (result.MessageType != System.Net.WebSockets.WebSocketMessageType.Binary)
-                        throw new FormatException("Text WebSocket frame received");
-                    if (result.Count > MaxFrame - message.Length) throw new FormatException("Latch frame too large");
-                    message.Write(chunk, 0, result.Count);
-                } while (!result.EndOfMessage);
-                Dispatch(LatchEnvelope.Decode(message.ToArray()));
-            }
+                result = await socket.ReceiveAsync(new ArraySegment<byte>(chunk), _stop.Token).ConfigureAwait(false);
+                if (result.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
+                    throw new LatchError("connection_closed", "connection closed: " + socket.CloseStatus + " " + socket.CloseStatusDescription);
+                if (result.MessageType != System.Net.WebSockets.WebSocketMessageType.Binary)
+                    throw new FormatException("Text WebSocket frame received");
+                if (result.Count > MaxFrame - message.Length) throw new FormatException("Latch frame too large");
+                message.Write(chunk, 0, result.Count);
+            } while (!result.EndOfMessage);
+            Dispatch(socket, LatchEnvelope.Decode(message.ToArray()));
         }
-        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
-        catch (Exception error) { Fail(error); }
     }
 
-    private void DeliverEvent(Action<byte[]> handler, byte[] payload)
+    private void Dispatch(System.Net.WebSockets.ClientWebSocket socket, LatchEnvelope envelope)
     {
-        try { handler(payload); }
-        catch (Exception error) { Fail(error); }
-    }
-    private void Dispatch(LatchEnvelope envelope)
-    {
+        lock (_gate) { if (_socket != socket || _closed) return; }
         switch (envelope.Kind)
         {
             case 4:
             case 5:
                 TaskCompletionSource<byte[]>? waiter;
-                lock (_gate)
-                {
-                    _pending.TryGetValue(envelope.ID, out waiter);
-                    _pending.Remove(envelope.ID);
-                }
+                lock (_gate) { _pending.TryGetValue(envelope.ID, out waiter); _pending.Remove(envelope.ID); }
                 if (envelope.Kind == 4) waiter?.TrySetResult(envelope.Payload);
                 else waiter?.TrySetException(new LatchError(envelope.Code, envelope.Error));
                 break;
             case 6:
-                Action<byte[]>? handler;
-                lock (_gate)
-                {
-                    if (_closed) return;
-                    handler = _onEvent;
-                    if (handler == null) _earlyEvents.Enqueue(envelope.Payload);
-                }
-                if (handler != null) DeliverEvent(handler, envelope.Payload);
+                try { _onEvent(envelope.Payload); } catch (Exception error) { Fail(socket, error); }
                 break;
-            case 7: Fail(new LatchError(envelope.Code, envelope.Error)); break;
-            default: Fail(new FormatException("Unexpected Latch envelope kind")); break;
+            case 7: Fail(socket, new LatchError(envelope.Code, envelope.Error)); break;
+            default: Fail(socket, new FormatException("Unexpected Latch envelope kind")); break;
         }
     }
-    private void Fail(Exception error)
+    private void Notify(ConnectionState state) { try { _onStateChange?.Invoke(state); } catch (Exception) { } }
+    private void Fail(System.Net.WebSockets.ClientWebSocket socket, Exception error)
     {
         TaskCompletionSource<byte[]>[] pending;
-        Action<Exception>? handler;
         lock (_gate)
         {
-            if (_closed) return;
-            _closed = true;
-            _failure = error;
+            if (_closed || _state == ConnectionState.Offline || _attempt != socket) return;
+            _socket = null;
+            _state = ConnectionState.Offline;
             pending = _pending.Values.ToArray();
             _pending.Clear();
-            _earlyEvents.Clear();
-            handler = _onFailure;
-            _failureNotified = handler != null;
         }
-        _stop.Cancel();
-        _socket.Abort();
+        socket.Abort();
         foreach (var waiter in pending) waiter.TrySetException(error);
-        try { handler?.Invoke(error); } catch (Exception) { /* A failed callback cannot revive the connection. */ }
+        Notify(ConnectionState.Offline);
+        try { _onFailure?.Invoke(error); } catch (Exception) { }
     }
     public ValueTask DisposeAsync()
     {
-        Fail(new LatchError("connection_closed", "connection closed"));
-        _socket.Dispose();
+        TaskCompletionSource<byte[]>[] waiters;
+        System.Net.WebSockets.ClientWebSocket? socket;
+        lock (_gate)
+        {
+            if (_closed) return default;
+            _closed = true;
+            socket = _attempt;
+            _socket = null;
+            _attempt = null;
+            waiters = _pending.Values.Concat(_queued.Select(q => q.Waiter)).ToArray();
+            _pending.Clear(); _queued.Clear();
+        }
+        var error = new LatchError("connection_closed", "connection closed");
+        _stop.Cancel();
+        socket?.Abort();
+        _initial.TrySetException(error);
+        foreach (var waiter in waiters) waiter.TrySetException(error);
+        Notify(ConnectionState.Offline);
         return default;
     }
 }

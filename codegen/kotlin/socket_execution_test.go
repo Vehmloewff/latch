@@ -2,11 +2,13 @@ package kotlin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,14 +122,137 @@ func TestGeneratedKotlinRealSocketLifecycle(t *testing.T) {
 	}
 }
 
+func TestGeneratedKotlinRequestHeadersAndReconnect(t *testing.T) {
+	kotlinc, err := exec.LookPath("kotlinc")
+	if err != nil {
+		t.Skip("kotlinc unavailable")
+	}
+	java, err := exec.LookPath("java")
+	if err != nil {
+		t.Skip("Java unavailable")
+	}
+	var attempts atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if got := r.Header.Get("X-Latch-Attempt"); got != fmt.Sprint(n+1) {
+			t.Errorf("attempt %d header = %q", n, got)
+		}
+		if r.URL.Query().Get("foo") != "bar" || r.URL.Query().Get("version") != "v1" || len(r.URL.Query()["version"]) != 1 {
+			t.Errorf("attempt %d query = %q", n, r.URL.RawQuery)
+		}
+		if n == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		defer ws.CloseNow()
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		_, raw, err := ws.Read(ctx)
+		if err != nil {
+			t.Errorf("read: %v", err)
+			return
+		}
+		var req wire.Envelope
+		if err := req.UnmarshalBinary(raw); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if n == 2 {
+			ws.Close(websocket.StatusNormalClosure, "drop")
+			return
+		}
+		if n != 3 {
+			t.Errorf("unexpected attempt %d", n)
+			return
+		}
+		resp, _ := (wire.Envelope{Type: wire.FrameResponse, ID: req.ID, Payload: req.Payload}).MarshalBinary()
+		if err := ws.Write(ctx, websocket.MessageBinary, resp); err != nil {
+			t.Errorf("response: %v", err)
+			return
+		}
+		payload, _ := wire.Encode(struct {
+			Text    string            `latch:"1"`
+			State   string            `latch:"2"`
+			Blob    []byte            `latch:"5"`
+			History []string          `latch:"6"`
+			Tags    map[string]string `latch:"7"`
+		}{Text: "event", State: "open", Blob: []byte{}, History: []string{}, Tags: map[string]string{}})
+		event, _ := (wire.Envelope{Type: wire.FrameEvent, Payload: payload}).MarshalBinary()
+		if err := ws.Write(ctx, websocket.MessageBinary, event); err != nil {
+			t.Errorf("event: %v", err)
+			return
+		}
+		<-ctx.Done()
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "LatchClient.kt"), []byte(source(t, fixture(), Options{})), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Reconnect.kt"), []byte(reconnectHarness), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	jar := filepath.Join(dir, "test.jar")
+	if out, err := exec.CommandContext(ctx, kotlinc, filepath.Join(dir, "LatchClient.kt"), filepath.Join(dir, "Reconnect.kt"), "-include-runtime", "-d", jar).CombinedOutput(); err != nil {
+		t.Fatalf("compile: %v\n%s", err, out)
+	}
+	if out, err := exec.CommandContext(ctx, java, "-jar", jar, "ws"+server.URL[len("http"):]+"?foo=bar&version=old").CombinedOutput(); err != nil {
+		t.Fatalf("reconnect: %v\n%s", err, out)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts: %d", attempts.Load())
+	}
+}
+
+const reconnectHarness = `import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.ExecutionException
+
+fun main(args: Array<String>) {
+  val states = CopyOnWriteArrayList<ConnectionState>()
+  val event = java.util.concurrent.CountDownLatch(1)
+  val hooks = java.util.concurrent.atomic.AtomicInteger()
+  val hookFailures = java.util.concurrent.atomic.AtomicInteger()
+  val client = LatchClient(args.single(), { if (it.text == "event") event.countDown() }, { states.add(it) },
+    { if (it.message == "hook failure") hookFailures.incrementAndGet() },
+    { builder ->
+      val attempt = hooks.incrementAndGet()
+      if (attempt == 1) throw IllegalStateException("hook failure")
+      builder.header("X-Latch-Attempt", attempt.toString())
+    }).connect().get(16, TimeUnit.SECONDS)
+  try {
+    val packet = Packet("sent", State.Open, null, blob = byteArrayOf(1), history = emptyList(), tags = emptyMap())
+    try { client.chatSendMessage(packet).get(8, TimeUnit.SECONDS); error("sent request survived disconnect") }
+    catch (e: ExecutionException) { check((e.cause as LatchError).code == "connection_closed") }
+    val offline = client.chatSendMessage(Packet("offline", State.Open, null, blob = byteArrayOf(1), history = emptyList(), tags = emptyMap()))
+    check(offline.get(12, TimeUnit.SECONDS).text == "offline")
+    check(event.await(8, TimeUnit.SECONDS))
+    check(states.count { it == ConnectionState.CONNECTED } == 2)
+    check(hooks.get() == 4 && hookFailures.get() == 1)
+    check(states.count { it == ConnectionState.CONNECTING } >= 4)
+    check(states.contains(ConnectionState.OFFLINE))
+  } finally { client.close() }
+  println("Kotlin reconnect passed")
+}
+`
+
 const socketHarness = `import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ExecutionException
 
 fun main(args: Array<String>) {
-  val client = LatchClient(args.single()).connect().get(8, TimeUnit.SECONDS)
   val arrived = CountDownLatch(1)
-  client.onEvent = { e -> check(e.text == "early"); arrived.countDown() }
+  val states = java.util.concurrent.CopyOnWriteArrayList<ConnectionState>()
+  val client = LatchClient(args.single(), { e -> check(e.text == "early"); arrived.countDown() }, { states.add(it) }).connect().get(8, TimeUnit.SECONDS)
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED))
   check(arrived.await(4, TimeUnit.SECONDS))
   val packet = Packet("hello", State.Open, null, blob = byteArrayOf(1, 2), history = emptyList(), tags = emptyMap())
   val response = client.chatSendMessage(packet).get(5, TimeUnit.SECONDS)
@@ -136,9 +261,17 @@ fun main(args: Array<String>) {
   catch (e: ExecutionException) { check((e.cause as LatchError).code == "denied") }
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("pending RPC survived server close") }
   catch (_: ExecutionException) { }
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED, ConnectionState.OFFLINE))
+  val offline = client.chatSendMessage(packet)
   client.close()
+  try { offline.get(5, TimeUnit.SECONDS); error("queued request survived close") }
+  catch (e: ExecutionException) { check((e.cause as LatchError).code == "connection_closed") }
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("closed connection allowed RPC") }
   catch (_: ExecutionException) { }
+  val failedStates = mutableListOf<ConnectionState>()
+  try { LatchClient("not a websocket URL", { _ -> }, { failedStates.add(it) }).connect().get(5, TimeUnit.SECONDS); error("invalid URL connected") }
+  catch (_: ExecutionException) { }
+  check(failedStates == listOf(ConnectionState.CONNECTING, ConnectionState.OFFLINE))
   println("Kotlin real WebSocket lifecycle passed")
 }
 `

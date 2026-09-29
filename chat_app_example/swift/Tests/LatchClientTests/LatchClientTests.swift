@@ -41,16 +41,55 @@ final class LatchClientTests: XCTestCase {
         }
     }
 
-    func testRPCEventsAndErrorsAgainstGoServer() async throws {
-        guard let rawURL = ProcessInfo.processInfo.environment["SERVER_URL"],
-              let url = URL(string: rawURL) else {
-            throw XCTSkip("SERVER_URL is only configured by the cross-language integration runner")
+    func testFailedConnectReportsOffline() async {
+        var continuation: AsyncStream<ConnectionState>.Continuation!
+        let stream = AsyncStream<ConnectionState> { continuation = $0 }
+        let sink = continuation!
+        let client = LatchClient(
+            url: URL(string: "ws://127.0.0.1:1")!,
+            onEvent: { _ in },
+            onConnectionStateChange: { sink.yield($0) }
+        )
+        let attempt = Task { try await client.connect() }
+        try? await Task.sleep(for: .milliseconds(200))
+        attempt.cancel()
+        do {
+            _ = try await attempt.value
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+            var states = stream.makeAsyncIterator()
+            let connecting = await states.next()
+            let offline = await states.next()
+            XCTAssertEqual(connecting, .connecting)
+            XCTAssertEqual(offline, .offline)
         }
+    }
 
-        let connection = try await LatchClient(url: url).connect()
+    func testRPCEventsAndErrorsAgainstGoServer() async throws {
+        let rawURL = try XCTUnwrap(
+            ProcessInfo.processInfo.environment["SERVER_URL"],
+            "Run server-backed Swift tests with go run ./integration_test swift"
+        )
+        let url = try XCTUnwrap(URL(string: rawURL), "Invalid SERVER_URL: \(rawURL)")
+
+        var eventContinuation: AsyncStream<Event>.Continuation!
+        let eventStream = AsyncStream<Event> { eventContinuation = $0 }
+        var stateContinuation: AsyncStream<ConnectionState>.Continuation!
+        let stateStream = AsyncStream<ConnectionState> { stateContinuation = $0 }
+        let eventSink = eventContinuation!
+        let stateSink = stateContinuation!
+        let connection = try await LatchClient(
+            url: url,
+            onEvent: { eventSink.yield($0) },
+            onConnectionStateChange: { stateSink.yield($0) }
+        ).connect()
         defer { Task { await connection.close() } }
-
-        let eventStream = connection.events
+        var states = stateStream.makeAsyncIterator()
+        let connecting = await states.next()
+        XCTAssertEqual(connecting, .connecting)
+        let connected = await states.next()
+        XCTAssertEqual(connected, .connected)
         let presenceTask = Task { try await nextEvent(eventStream, matching: "presence") }
         let joined = try await connection.chatJoinRoom(
             JoinRoomRequest(room: "general", userId: "swift-user")
@@ -76,6 +115,14 @@ final class LatchClientTests: XCTestCase {
         let rooms = try await connection.chatListRooms(ListRoomsRequest())
         XCTAssertEqual(rooms.rooms, ["general", "random"])
 
+        await assertServerError(connection)
+        await connection.close()
+        let offline = await states.next()
+        XCTAssertEqual(offline, .offline)
+        await assertClosedCallFails(connection)
+    }
+
+    private func assertServerError(_ connection: ConnectedLatchClient) async {
         do {
             _ = try await connection.chatSendMessage(
                 SendMessageRequest(room: "", senderId: "swift-user", text: "")
@@ -84,14 +131,19 @@ final class LatchClientTests: XCTestCase {
         } catch let error as LatchError {
             XCTAssertEqual(error.code, "invalid_request")
             XCTAssertEqual(error.message, "room, senderId, and text are required")
+        } catch {
+            XCTFail("unexpected RPC error: \(error)")
         }
+    }
 
-        await connection.close()
+    private func assertClosedCallFails(_ connection: ConnectedLatchClient) async {
         do {
             _ = try await connection.chatListRooms(ListRoomsRequest())
             XCTFail("RPC after close should fail")
         } catch let error as LatchError {
             XCTAssertEqual(error.code, "connection_closed")
+        } catch {
+            XCTFail("unexpected close error: \(error)")
         }
     }
 
