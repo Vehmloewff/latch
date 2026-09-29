@@ -4,6 +4,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"path/filepath"
 
@@ -14,18 +15,41 @@ import (
 func main() {
 	root := "."
 	lw := api.Build()
-	if err := lw.GenerateTypeScript(latch.TypeScriptOptions{OutputDir: filepath.Join(root, "typescript")}); err != nil {
-		log.Fatal(err)
+	selected := func(language string) bool {
+		if len(os.Args) == 1 {
+			return true
+		}
+		for _, arg := range os.Args[1:] {
+			if arg == language {
+				return true
+			}
+		}
+		return false
 	}
-	if err := lw.GenerateDart(latch.DartOptions{OutputDir: filepath.Join(root, "dart"), Package: "chat_app_client"}); err != nil {
-		log.Fatal(err)
+	if selected("typescript") {
+		if err := lw.GenerateTypeScript(latch.TypeScriptOptions{OutputDir: filepath.Join(root, "typescript")}); err != nil {
+			log.Fatal(err)
+		}
 	}
-	if err := lw.GenerateGo(latch.GoOptions{OutputDir: filepath.Join(root, "golang"), Package: "chatappclient"}); err != nil {
-		log.Fatal(err)
+	if selected("dart") {
+		if err := lw.GenerateDart(latch.DartOptions{OutputDir: filepath.Join(root, "dart"), Package: "chat_app_client"}); err != nil {
+			log.Fatal(err)
+		}
 	}
-	if err := lw.GenerateSwift(latch.SwiftOptions{OutputDir: filepath.Join(root, "swift", "Sources", "LatchClient")}); err != nil {
-		log.Fatal(err)
+	if selected("go") {
+		if err := lw.GenerateGo(latch.GoOptions{OutputDir: filepath.Join(root, "golang"), Package: "chatappclient"}); err != nil {
+			log.Fatal(err)
+		}
 	}
-
-	log.Println("generated clients written to chat_app_example/{typescript,dart,golang,swift/Sources/LatchClient}")
+	if selected("swift") {
+		if err := lw.GenerateSwift(latch.SwiftOptions{OutputDir: filepath.Join(root, "swift", "Sources", "LatchClient")}); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if selected("kotlin") {
+		if err := lw.GenerateKotlin(latch.KotlinOptions{OutputDir: filepath.Join(root, "kotlin")}); err != nil {
+			log.Fatal(err)
+		}
+	}
+	log.Println("generated requested clients")
 }

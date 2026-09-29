@@ -8,6 +8,7 @@ import (
 
 	"github.com/vehmloewff/latch/codegen/dart"
 	"github.com/vehmloewff/latch/codegen/golang"
+	"github.com/vehmloewff/latch/codegen/kotlin"
 	"github.com/vehmloewff/latch/codegen/swift"
 	"github.com/vehmloewff/latch/codegen/typescript"
 	"github.com/vehmloewff/latch/protocol"
@@ -64,6 +65,14 @@ type SwiftOptions struct {
 	ClientName string
 }
 
+// KotlinOptions configures Kotlin/JVM client generation.
+type KotlinOptions struct {
+	// OutputDir is the directory for the standalone LatchClient.kt source file.
+	OutputDir string
+	// ClientName overrides the generated client class name (default LatchClient).
+	ClientName string
+}
+
 // GenerateOptions selects which language clients Server.Generate produces.
 // Leave a field nil to skip that language.
 type GenerateOptions struct {
@@ -71,6 +80,7 @@ type GenerateOptions struct {
 	Dart       *DartOptions
 	Go         *GoOptions
 	Swift      *SwiftOptions
+	Kotlin     *KotlinOptions
 }
 
 // Schema finalizes the server (if necessary) and returns the normalized
@@ -167,6 +177,22 @@ func (s *Server[S]) GenerateSwift(opts SwiftOptions) error {
 	return nil
 }
 
+// GenerateKotlin finalizes the server and writes a standalone Kotlin/JVM client.
+func (s *Server[S]) GenerateKotlin(opts KotlinOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := kotlin.Generate(schema, kotlin.Options{ClientName: opts.ClientName})
+	if err != nil {
+		return fmt.Errorf("latch: generate kotlin: %w", err)
+	}
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latch: write kotlin output: %w", err)
+	}
+	return nil
+}
+
 // Generate finalizes the server (if not already finalized) and writes
 // generated client code for every requested language. It is retained as a
 // convenience wrapper; callers that want one target can use
@@ -189,6 +215,11 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	}
 	if opts.Swift != nil {
 		if err := s.GenerateSwift(*opts.Swift); err != nil {
+			return err
+		}
+	}
+	if opts.Kotlin != nil {
+		if err := s.GenerateKotlin(*opts.Kotlin); err != nil {
 			return err
 		}
 	}

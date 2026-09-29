@@ -69,6 +69,9 @@ type TypeRef struct {
 
 // Field is one field of a NamedType of kind KindStruct.
 type Field struct {
+	// Number is the numeric latch tag used on the wire. Zero indicates an older
+	// hand-built IR value without explicit field numbering.
+	Number   uint64
 	GoName   string
 	Type     TypeRef
 	Optional bool // latch tag carries `,omitempty`

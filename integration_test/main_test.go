@@ -7,14 +7,14 @@ import (
 
 func TestLanguagesSelectsAllByDefaultAndRequestedSubset(t *testing.T) {
 	all := languages(nil)
-	for _, language := range []string{"go", "dart", "typescript", "swift"} {
+	for _, language := range []string{"go", "dart", "typescript", "swift", "kotlin"} {
 		if !all[language] {
 			t.Errorf("default languages missing %q: %v", language, all)
 		}
 	}
 
 	selected := languages([]string{"go", "go", "typescript"})
-	if !selected["go"] || !selected["typescript"] || selected["dart"] || selected["swift"] {
+	if !selected["go"] || !selected["typescript"] || selected["dart"] || selected["swift"] || selected["kotlin"] {
 		t.Fatalf("languages subset = %v, want go/typescript only", selected)
 	}
 }

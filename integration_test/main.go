@@ -39,7 +39,13 @@ func runExample(selected map[string]bool) {
 	runBinaryRuntimeTests(selected)
 
 	fmt.Printf("\n=== example: %s ===\n", exampleName)
-	run(ex, "go", "run", "./cmd/generate_clients")
+	args := []string{"run", "./cmd/generate_clients"}
+	for _, language := range []string{"go", "typescript", "dart", "swift", "kotlin"} {
+		if selected[language] {
+			args = append(args, language)
+		}
+	}
+	run(ex, "go", args...)
 
 	ts := filepath.Join(ex, "typescript")
 	dart := filepath.Join(ex, "dart")
@@ -53,7 +59,7 @@ func runExample(selected map[string]bool) {
 		run(dart, "dart", "pub", "get")
 		run(dart, "dart", "analyze", "lib", "main.dart", "test")
 	}
-	if !selected["go"] && !selected["typescript"] && !selected["dart"] && !selected["swift"] {
+	if !selected["go"] && !selected["typescript"] && !selected["dart"] && !selected["swift"] && !selected["kotlin"] {
 		return
 	}
 
@@ -103,6 +109,17 @@ func runExample(selected map[string]bool) {
 			panic(fmt.Errorf("%s TypeScript example: %w", exampleName, err))
 		}
 	}
+	if selected["kotlin"] {
+		run(root, "go", "test", "./codegen/kotlin", "-count=1")
+		kotlinDir := filepath.Join(ex, "kotlin")
+		jar := filepath.Join(tmp, "kotlin-integration.jar")
+		run(kotlinDir, "kotlinc", "LatchClient.kt", "Integration.kt", "-include-runtime", "-d", jar)
+		kotlinTest := exec.Command("java", "-jar", jar)
+		kotlinTest.Dir, kotlinTest.Env, kotlinTest.Stdout, kotlinTest.Stderr = kotlinDir, env, os.Stdout, os.Stderr
+		if err := kotlinTest.Run(); err != nil {
+			panic(fmt.Errorf("%s Kotlin integration tests: %w", exampleName, err))
+		}
+	}
 	if selected["swift"] {
 		swiftDir := filepath.Join(ex, "swift")
 		run(swiftDir, "swiftlint", "lint", "--strict")
@@ -140,7 +157,7 @@ func runBinaryRuntimeTests(selected map[string]bool) {
 }
 
 func languages(args []string) map[string]bool {
-	valid := map[string]bool{"go": true, "dart": true, "typescript": true, "swift": true}
+	valid := map[string]bool{"go": true, "dart": true, "typescript": true, "swift": true, "kotlin": true}
 	selected := map[string]bool{}
 	if len(args) == 0 {
 		for language := range valid {
@@ -150,7 +167,7 @@ func languages(args []string) map[string]bool {
 	}
 	for _, language := range args {
 		if !valid[language] {
-			panic(fmt.Sprintf("unknown language %q; choose go, dart, typescript, or swift", language))
+			panic(fmt.Sprintf("unknown language %q; choose go, dart, typescript, swift, or kotlin", language))
 		}
 		selected[language] = true
 	}

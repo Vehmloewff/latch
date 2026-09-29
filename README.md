@@ -126,6 +126,12 @@ func main() {
         log.Fatal(err)
     }
 
+    if err := server.GenerateKotlin(latch.KotlinOptions{
+        OutputDir: "./kotlin",
+    }); err != nil {
+        log.Fatal(err)
+    }
+
     if err := server.GenerateSwift(latch.SwiftOptions{
         OutputDir: "./swift",
     }); err != nil {
@@ -133,6 +139,8 @@ func main() {
     }
 }
 ```
+
+The Kotlin/JVM target generates a standalone `LatchClient.kt` using the JDK WebSocket client (Java 11+) and Kotlin standard library. Connect with `LatchClient(url).connect()`, call typed methods on the returned connection, set `onEvent` to receive events, and call `close()` when done. Run `go test ./codegen/kotlin -v` with `kotlinc` and Java installed for binary and socket tests; `go run ./integration_test kotlin` also generates the example client.
 
 Use `GenerateSchema` when integrating the in-process normalized protocol IR with custom generators.
 

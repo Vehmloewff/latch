@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -261,6 +262,10 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 		}
 
 		optional := parseLatchOptional(sf)
+		fieldNumber, err := parseLatchNumber(sf)
+		if err != nil {
+			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
+		}
 
 		if err := declareFieldEnum(r, sf); err != nil {
 			return protocol.TypeRef{}, fmt.Errorf("struct %s field %s: %w", t.String(), sf.Name, err)
@@ -278,6 +283,7 @@ func (r *Registry) resolveStruct(t reflect.Type, visiting map[reflect.Type]bool)
 		}
 
 		fields = append(fields, protocol.Field{
+			Number:   fieldNumber,
 			GoName:   sf.Name,
 			Type:     ref,
 			Optional: optional,
@@ -299,6 +305,18 @@ func cloneVisiting(v map[reflect.Type]bool) map[reflect.Type]bool {
 
 func typeID(t reflect.Type) string {
 	return t.PkgPath() + "." + t.Name()
+}
+
+func parseLatchNumber(sf reflect.StructField) (uint64, error) {
+	tag, ok := sf.Tag.Lookup("latch")
+	if !ok {
+		return 0, fmt.Errorf("missing latch field number")
+	}
+	n, err := strconv.ParseUint(strings.Split(tag, ",")[0], 10, 64)
+	if err != nil || n == 0 {
+		return 0, fmt.Errorf("invalid latch field number %q", tag)
+	}
+	return n, nil
 }
 
 func parseLatchOptional(sf reflect.StructField) bool {

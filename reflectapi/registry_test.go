@@ -30,6 +30,34 @@ type Widget struct {
 	unexpo    string            //nolint:unused
 }
 
+func TestResolveFieldNumbers(t *testing.T) {
+	type sparse struct {
+		First string `latch:"19"`
+		Last  int    `latch:"2,omitempty"`
+	}
+	registry := NewRegistry()
+	if _, err := registry.Resolve(reflect.TypeOf(sparse{})); err != nil {
+		t.Fatal(err)
+	}
+	fields := registry.Types()[0].Fields
+	if fields[0].Number != 19 || fields[1].Number != 2 || !fields[1].Optional {
+		t.Fatalf("incorrect field numbers: %+v", fields)
+	}
+	for _, value := range []any{
+		struct{ Value int }{},
+		struct {
+			Value int `latch:"0"`
+		}{},
+		struct {
+			Value int `latch:"not-a-number"`
+		}{},
+	} {
+		if _, err := NewRegistry().Resolve(reflect.TypeOf(value)); err == nil {
+			t.Errorf("accepted invalid field number in %T", value)
+		}
+	}
+}
+
 func TestResolveStructShape(t *testing.T) {
 	_ = Widget{}.unexpo // silence unused field lint in this scratch fixture
 	r := NewRegistry()

@@ -87,6 +87,29 @@ jobs:
       - name: Run SwiftLint and Swift package tests
         run: go run ./integration_test swift
 
+  kotlin:
+    name: Kotlin client tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Kotlin compiler
+        run: |
+          curl -fsSL -o /tmp/kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.1.20/kotlin-compiler-2.1.20.zip
+          unzip -q /tmp/kotlin.zip -d /tmp/kotlin
+          echo /tmp/kotlin/kotlinc/bin >> "$GITHUB_PATH"
+      - name: Run Kotlin binary and socket tests
+        run: go test ./codegen/kotlin -count=1 -v
+      - name: Run Kotlin integration tests
+        run: go run ./integration_test kotlin
+
   node:
     name: Node tests
     runs-on: ubuntu-latest
