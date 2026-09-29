@@ -11,5 +11,8 @@ dist/
 .packages
 build/
 
+# Swift Package Manager
+.build/
+
 # Editor/OS
 .DS_Store

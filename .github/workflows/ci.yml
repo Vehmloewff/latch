@@ -81,7 +81,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run Swift-to-Go WebSocket integration tests
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint and Swift package tests
         run: go run ./integration_test swift
 
   node:

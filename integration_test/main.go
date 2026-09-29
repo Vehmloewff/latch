@@ -104,12 +104,12 @@ func runExample(selected map[string]bool) {
 		}
 	}
 	if selected["swift"] {
-		binary := filepath.Join(tmp, "swift-client-integration")
-		run(ex, "swiftc", "-warnings-as-errors", "swift/LatchClient.swift", "swift/integration_test.swift", "-o", binary)
-		swiftTest := exec.Command(binary)
-		swiftTest.Dir, swiftTest.Env, swiftTest.Stdout, swiftTest.Stderr = ex, env, os.Stdout, os.Stderr
+		swiftDir := filepath.Join(ex, "swift")
+		run(swiftDir, "swiftlint", "lint", "--strict")
+		swiftTest := exec.Command("swift", "test", "-Xswiftc", "-warnings-as-errors")
+		swiftTest.Dir, swiftTest.Env, swiftTest.Stdout, swiftTest.Stderr = swiftDir, env, os.Stdout, os.Stderr
 		if err := swiftTest.Run(); err != nil {
-			panic(fmt.Errorf("%s Swift protocol tests: %w", exampleName, err))
+			panic(fmt.Errorf("%s Swift tests: %w", exampleName, err))
 		}
 	}
 	if selected["dart"] {

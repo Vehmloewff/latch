@@ -1,0 +1,7 @@
+excluded:
+  - .build
+  - Sources/LatchClient/LatchClient.swift
+
+line_length:
+  warning: 140
+  error: 200

@@ -162,9 +162,12 @@ final result = await conn.mathAdd(AddRequest(a: 1, b: 2));
 print(result.result);
 ```
 
-Swift (generated as `LatchClient.swift`, using Swift concurrency and Foundation's WebSocket API):
+Swift (generated into the `LatchClient` Swift package, using Swift concurrency and Foundation's WebSocket API):
 
 ```swift
+import Foundation
+import LatchClient
+
 let client = LatchClient(url: URL(string: "ws://localhost:8080/ws")!)
 let connection = try await client.connect()
 let result = try await connection.chatSendMessage(SendMessageRequest(room: "general", senderId: "user", text: "hello"))
@@ -215,6 +218,7 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 ```sh
 go build ./...
 go test ./...
+(cd chat_app_example/swift && swift test)
 
 # Full integration runner: installs TypeScript/Dart dependencies, runs both
 # standalone binary-runtime suites, regenerates clients, and runs the example
@@ -225,8 +229,10 @@ The cross-language runner is separate from `go test`: it installs the selected
 language dependencies, runs the standalone TypeScript and Dart binary-runtime
 tests, regenerates the chat app example's clients, runs the selected language
 checks, starts its Go server, and runs the integration programs. Run
-`go run ./integration_test swift` to compile the generated Swift client and run
-its WebSocket integration tests against the Go server. Language
-language arguments are optional: `go`, `dart`, `typescript`, and `swift`; with no
+`go run ./integration_test swift` to run SwiftLint and `swift test`, including
+its WebSocket integration test against the Go server. Running `swift test` from
+the package directory without `SERVER_URL` still runs codec tests and skips the
+server-dependent test. Language
+Runner arguments are optional: `go`, `dart`, `typescript`, and `swift`; with no
 arguments, all four run. The complete working example is in
 [`chat_app_example`](chat_app_example).
