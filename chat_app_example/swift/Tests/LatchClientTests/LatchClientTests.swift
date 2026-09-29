@@ -50,10 +50,14 @@ final class LatchClientTests: XCTestCase {
             onEvent: { _ in },
             onConnectionStateChange: { sink.yield($0) }
         )
+        let attempt = Task { try await client.connect() }
+        try? await Task.sleep(for: .milliseconds(200))
+        attempt.cancel()
         do {
-            _ = try await client.connect()
-            XCTFail("expected connection failure")
+            _ = try await attempt.value
+            XCTFail("expected cancellation")
         } catch {
+            XCTAssertTrue(error is CancellationError)
             var states = stream.makeAsyncIterator()
             let connecting = await states.next()
             let offline = await states.next()
@@ -63,10 +67,11 @@ final class LatchClientTests: XCTestCase {
     }
 
     func testRPCEventsAndErrorsAgainstGoServer() async throws {
-        guard let rawURL = ProcessInfo.processInfo.environment["SERVER_URL"],
-              let url = URL(string: rawURL) else {
-            throw XCTSkip("SERVER_URL is only configured by the cross-language integration runner")
-        }
+        let rawURL = try XCTUnwrap(
+            ProcessInfo.processInfo.environment["SERVER_URL"],
+            "Run server-backed Swift tests with go run ./integration_test swift"
+        )
+        let url = try XCTUnwrap(URL(string: rawURL), "Invalid SERVER_URL: \(rawURL)")
 
         var eventContinuation: AsyncStream<Event>.Continuation!
         let eventStream = AsyncStream<Event> { eventContinuation = $0 }
@@ -110,6 +115,14 @@ final class LatchClientTests: XCTestCase {
         let rooms = try await connection.chatListRooms(ListRoomsRequest())
         XCTAssertEqual(rooms.rooms, ["general", "random"])
 
+        await assertServerError(connection)
+        await connection.close()
+        let offline = await states.next()
+        XCTAssertEqual(offline, .offline)
+        await assertClosedCallFails(connection)
+    }
+
+    private func assertServerError(_ connection: ConnectedLatchClient) async {
         do {
             _ = try await connection.chatSendMessage(
                 SendMessageRequest(room: "", senderId: "swift-user", text: "")
@@ -118,16 +131,19 @@ final class LatchClientTests: XCTestCase {
         } catch let error as LatchError {
             XCTAssertEqual(error.code, "invalid_request")
             XCTAssertEqual(error.message, "room, senderId, and text are required")
+        } catch {
+            XCTFail("unexpected RPC error: \(error)")
         }
+    }
 
-        await connection.close()
-        let offline = await states.next()
-        XCTAssertEqual(offline, .offline)
+    private func assertClosedCallFails(_ connection: ConnectedLatchClient) async {
         do {
             _ = try await connection.chatListRooms(ListRoomsRequest())
             XCTFail("RPC after close should fail")
         } catch let error as LatchError {
             XCTAssertEqual(error.code, "connection_closed")
+        } catch {
+            XCTFail("unexpected close error: \(error)")
         }
     }
 

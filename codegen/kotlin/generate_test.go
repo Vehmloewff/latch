@@ -71,7 +71,7 @@ func TestGenerateStandaloneClientAndDeterministicOrder(t *testing.T) {
 		"LatchValue.required(fields, 1L)", "fields[3L]?.let", "fields[4L]?.let",
 		`Open("open")`, "fun fromWire(value: String)",
 		"internal object LatchBinary", "internal class LatchTransport", "WebSocket.Listener",
-		"ByteOrder.LITTLE_ENDIAN", "kind: Int", "socket.sendBinary", "URI.create",
+		"ByteOrder.LITTLE_ENDIAN", "kind: Int", "ws.sendBinary", "URI.create",
 	)
 	if strings.Index(first, "enum class State") < strings.Index(first, "class Packet(") {
 		t.Fatal("types not sorted by display name")
@@ -192,7 +192,7 @@ func TestFieldNumbersAndDuplicateValidation(t *testing.T) {
 func TestRuntimeProtocolContract(t *testing.T) {
 	src := source(t, fixture(), Options{})
 	assertContains(t, src, "byte(1); byte(kind); text(version); text(id); text(method); text(event); blob(payload); text(error); text(code)",
-		"if (r.byte() != 1)", "3 -> signed()", "4 -> LatchValue.Unsigned(uint())", "8 -> blob()", "9 ->", "10 -> List(count())", "11 ->", "12 ->", "Math.floorDiv", "MAX_CONTAINER", "depth > 128", "pending.remove(env.id)", "pending.values.toList()", "if (transport == null) failBeforeOpen(err)")
+		"if (r.byte() != 1)", "3 -> signed()", "4 -> LatchValue.Unsigned(uint())", "8 -> blob()", "9 ->", "10 -> List(count())", "11 ->", "12 ->", "Math.floorDiv", "MAX_CONTAINER", "depth > 128", "pending.remove(env.id)", "pending.values.toList()", "failedAttempt(generation, err)")
 	if strings.Contains(src, "expected connected frame") || strings.Contains(src, "LatchEnvelope(1,") {
 		t.Fatal("unexpected legacy handshake")
 	}

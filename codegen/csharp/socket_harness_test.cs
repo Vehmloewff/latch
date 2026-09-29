@@ -34,7 +34,11 @@ static class Program
         catch (LatchError error) { Check(error.Code == "connection_closed", "pending close code"); }
         Check((await Bounded(failure.Task)) is LatchError, "failure callback");
         lock (states) Check(states.SequenceEqual(new[] { ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline }), "close states");
-        try { await Bounded(client.ChatSendMessageAsync(Packet("after close"))); throw new Exception("closed connection sent request"); }
+        var offline = client.ChatSendMessageAsync(Packet("offline"));
+        await client.DisposeAsync();
+        try { await Bounded(offline); throw new Exception("queued request survived dispose"); }
+        catch (LatchError error) { Check(error.Code == "connection_closed", "queued close code"); }
+        try { await Bounded(client.ChatSendMessageAsync(Packet("after close"))); throw new Exception("disposed connection sent request"); }
         catch (LatchError error) { Check(error.Code == "connection_closed", "closed call code"); }
         var failedStates = new List<ConnectionState>();
         try { await new LatchClient("not a websocket URL", _ => { }, state => failedStates.Add(state)).ConnectAsync(); throw new Exception("invalid URL connected"); }

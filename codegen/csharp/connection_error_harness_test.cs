@@ -16,7 +16,9 @@ static class Program
         }
         if (await failure.Task.WaitAsync(TimeSpan.FromSeconds(8)) is not LatchError { Code: "maintenance" })
             throw new Exception("missing connection failure callback");
-        try { await client.ChatSendMessageAsync(Request()).WaitAsync(TimeSpan.FromSeconds(8)); throw new Exception("call after connection error succeeded"); }
+        var queued = client.ChatSendMessageAsync(Request());
+        await client.DisposeAsync();
+        try { await queued.WaitAsync(TimeSpan.FromSeconds(8)); throw new Exception("queued call survived disposal"); }
         catch (LatchError error)
         {
             if (error.Code != "connection_closed") throw;

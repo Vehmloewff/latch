@@ -49,11 +49,16 @@ Uint8List _messageBytes(dynamic data) {
   throw BinaryMalformedError('WebSocket message is not binary');
 }
 
-Future<HandshakeResult> connectSocket(Uri url, String version) async {
+Future<HandshakeResult> connectSocket(Uri url, String version, [Future<void>? cancelled]) async {
   final query = Map<String, String>.from(url.queryParameters);
   query['version'] = version;
   final channel = WebSocketChannel.connect(url.replace(queryParameters: query));
-  await channel.ready;
+  try {
+    await Future.any<void>([channel.ready, if (cancelled != null) cancelled.then((_) => throw LatchError('connection_closed', 'the connection is closed'))]);
+  } catch (_) {
+    unawaited(channel.sink.close());
+    rethrow;
+  }
 
   final bufferedMessages = <Uint8List>[];
   final opened = Completer<HandshakeResult>();
@@ -62,6 +67,7 @@ Future<HandshakeResult> connectSocket(Uri url, String version) async {
 
   void rejectOpen(Object error, StackTrace stack) {
     if (opened.isCompleted) return;
+    unawaited(sub.cancel());
     try {
       channel.sink.close(1000);
     } catch (_) {}
@@ -101,12 +107,14 @@ Future<HandshakeResult> connectSocket(Uri url, String version) async {
       opened.complete(HandshakeResult(channel, sub, bufferedMessages));
     }
   }, onError: (Object error, StackTrace stack) {
-    if (watchingFirstFrame) {
+    if (!opened.isCompleted) {
       rejectOpen(
         LatchError('connect_rejected', 'connection failed'),
         stack,
       );
     }
+  }, onDone: () {
+    if (!opened.isCompleted) rejectOpen(LatchError('connection_closed', 'connection closed during setup'), StackTrace.current);
   });
 
   Timer(Duration.zero, () {
@@ -115,7 +123,15 @@ Future<HandshakeResult> connectSocket(Uri url, String version) async {
       opened.complete(HandshakeResult(channel, sub, bufferedMessages));
     }
   });
-  return opened.future;
+  if (cancelled == null) return opened.future;
+  return Future.any<HandshakeResult>([
+    opened.future,
+    cancelled.then((_) async {
+      await sub.cancel();
+      unawaited(channel.sink.close());
+      throw LatchError('connection_closed', 'the connection is closed');
+    }),
+  ]);
 }
 
 class _PendingRequest {
@@ -125,36 +141,79 @@ class _PendingRequest {
 }
 
 abstract class BaseConnection {
-  final WebSocketChannel _channel;
-  final StreamSubscription<dynamic> _subscription;
+  WebSocketChannel _channel;
+  StreamSubscription<dynamic> _subscription;
   int _nextId = 1;
   final Map<String, _PendingRequest> _pending = {};
   bool _closed = false;
+  bool _online = true;
+  final List<void Function()> _queued = [];
+  final List<void Function(Object)> _queuedReject = [];
   final void Function() _onClose;
+  final void Function() _onShutdown;
 
-  BaseConnection(HandshakeResult handshake, this._onClose)
-      : _channel = handshake.channel,
+  BaseConnection(HandshakeResult handshake, this._onClose, [void Function()? onShutdown])
+      : _onShutdown = onShutdown ?? (() {}),
+        _channel = handshake.channel,
         _subscription = handshake.subscription {
-    _subscription
-      ..onData(_handleMessage)
-      ..onDone(_handleClose)
-      ..onError((Object _, StackTrace __) {});
+    _installHandlers();
 
     if (handshake.bufferedMessages.isNotEmpty) {
       Timer(Duration.zero, () {
         for (final data in handshake.bufferedMessages) {
-          _handleMessage(data);
+          if (identical(_channel, handshake.channel) && _online && !_closed) _handleMessage(data);
         }
       });
     }
+  }
+
+  void _installHandlers() {
+    _subscription
+      ..onData(_handleMessage)
+      ..onDone(_handleClose)
+      ..onError((Object _, StackTrace __) { _channel.sink.close(); _handleClose(); });
+  }
+
+  bool reconnect(HandshakeResult handshake) {
+    if (_closed) {
+      handshake.subscription.cancel();
+      handshake.channel.sink.close();
+      return false;
+    }
+    _channel = handshake.channel;
+    _subscription = handshake.subscription;
+    _online = true;
+    _installHandlers();
+    for (final data in handshake.bufferedMessages) {
+      _handleMessage(data);
+    }
+    if (!_online) return false;
+    final sends = List<void Function()>.from(_queued);
+    final rejects = List<void Function(Object)>.from(_queuedReject);
+    _queued.clear();
+    _queuedReject.clear();
+    for (var i = 0; i < sends.length; i++) {
+      if (_closed) rejects[i](LatchError('connection_closed', 'the connection is closed'));
+      else if (!_online) { _queued.add(sends[i]); _queuedReject.add(rejects[i]); }
+      else sends[i]();
+    }
+    return _online;
   }
 
   bool get closed => _closed;
 
   void close() {
     if (_closed) return;
+    _closed = true;
+    _online = false;
+    _onShutdown();
+    _failAllPending(LatchError('connection_closed', 'the connection is closed'));
+    for (final reject in _queuedReject) { reject(LatchError('connection_closed', 'the connection is closed')); }
+    _queued.clear();
+    _queuedReject.clear();
+    _subscription.cancel();
     _channel.sink.close(1000);
-    _handleClose();
+    _onClose();
   }
 
   Future<TResp> call<TResp>(
@@ -169,18 +228,29 @@ abstract class BaseConnection {
     }
     final id = (_nextId++).toString();
     final completer = Completer<dynamic>();
-    _pending[id] = _PendingRequest(completer);
+    late final Uint8List frame;
     try {
-      final request = BinaryEnvelope(
-        type: FrameCode.request,
-        id: id,
-        method: method,
+      frame = BinaryEnvelope(
+        type: FrameCode.request, id: id, method: method,
         payload: BinaryCodec.encode(payload),
-      );
-      _channel.sink.add(request.encode());
+      ).encode();
     } catch (error, stack) {
-      _pending.remove(id);
-      completer.completeError(error, stack);
+      return Future<TResp>.error(error, stack);
+    }
+    void send() {
+      _pending[id] = _PendingRequest(completer);
+      try {
+        _channel.sink.add(frame);
+      } catch (error, stack) {
+        _pending.remove(id);
+        completer.completeError(error, stack);
+        _channel.sink.close();
+        _handleClose();
+      }
+    }
+    if (_online) { send(); } else {
+      _queued.add(send);
+      _queuedReject.add((error) => completer.completeError(error));
     }
     return completer.future.then((raw) => decode(raw));
   }
@@ -247,7 +317,9 @@ abstract class BaseConnection {
 
   void _handleClose() {
     if (_closed) return;
-    _closed = true;
+    if (!_online) return;
+    _online = false;
+    _subscription.cancel();
     _failAllPending(LatchError('connection_closed', 'the connection is closed'));
     _onClose();
   }
@@ -1006,7 +1078,15 @@ class LatchClient {
   final ClientOptions options;
   final void Function(Event) onEvent;
   final void Function(ConnectionState)? onConnectionStateChange;
+  static const _version = "1";
   ConnectionState _state = ConnectionState.offline;
+  bool _stopped = false;
+  bool _connecting = false;
+  bool _retrying = false;
+  Timer? _retryTimer;
+  Completer<void>? _retryWaiter;
+  BaseConnection? _client;
+  Completer<void>? _cancelAttempt;
 
   LatchClient(this.options, {required this.onEvent, this.onConnectionStateChange});
 
@@ -1017,18 +1097,79 @@ class LatchClient {
   }
 
   Future<ConnectedLatchClient> connect() async {
-    if (_state != ConnectionState.offline) {
-      throw StateError('Latch: client is already connecting or connected');
+    if (_connecting || _client != null || _stopped) {
+      throw StateError('Latch: client is already connecting or connected (or closed)');
     }
+    _connecting = true;
     _setState(ConnectionState.connecting);
+    while (!_stopped) {
     try {
-      final handshake = await connectSocket(options.url, "1");
-      final client = ConnectedLatchClient(handshake, onEvent, () => _setState(ConnectionState.offline));
+      _cancelAttempt = Completer<void>();
+      final handshake = await connectSocket(options.url, "1", _cancelAttempt!.future);
+      final client = ConnectedLatchClient(handshake, onEvent, _disconnected, _stop);
+      if (_stopped) { client.close(); break; }
+      _client = client;
+      _connecting = false;
       _setState(ConnectionState.connected);
       return client;
     } catch (_) {
+      if (_stopped) break;
       _setState(ConnectionState.offline);
-      rethrow;
+      await _delay();
+      if (!_stopped) _setState(ConnectionState.connecting);
+    }
+    }
+    throw LatchError('connection_closed', 'the connection is closed');
+  }
+
+  void close() {
+    _stop();
+    _client?.close();
+  }
+
+  void _stop() {
+    if (_stopped) return;
+    _stopped = true;
+    if (_cancelAttempt != null && !_cancelAttempt!.isCompleted) _cancelAttempt!.complete();
+    _retryTimer?.cancel();
+    if (_retryWaiter != null && !_retryWaiter!.isCompleted) _retryWaiter!.complete();
+    _setState(ConnectionState.offline);
+  }
+
+  Future<void> _delay() {
+    final waiter = Completer<void>();
+    _retryWaiter = waiter;
+    _retryTimer = Timer(const Duration(seconds: 2), () { if (!waiter.isCompleted) waiter.complete(); });
+    return waiter.future;
+  }
+
+  void _disconnected() {
+    _setState(ConnectionState.offline);
+    if (!_stopped && _client != null && !_retrying) { _retrying = true; unawaited(_retry()); }
+  }
+
+  Future<void> _retry() async {
+    await _delay();
+    while (!_stopped) {
+      _setState(ConnectionState.connecting);
+      try {
+        _cancelAttempt = Completer<void>();
+        final handshake = await connectSocket(options.url, _version, _cancelAttempt!.future);
+        if (_stopped) { handshake.subscription.cancel(); handshake.channel.sink.close(); return; }
+        if (_client?.reconnect(handshake) != true) {
+          if (_stopped || _client?.closed == true) return;
+          _setState(ConnectionState.offline);
+          await _delay();
+          continue;
+        }
+        _retrying = false;
+        _setState(ConnectionState.connected);
+        return;
+      } catch (_) {
+        if (_stopped) return;
+        _setState(ConnectionState.offline);
+        await _delay();
+      }
     }
   }
 }
@@ -1036,7 +1177,7 @@ class LatchClient {
 class ConnectedLatchClient extends BaseConnection {
   final void Function(Event) onEvent;
 
-  ConnectedLatchClient(HandshakeResult handshake, this.onEvent, void Function() onClose) : super(handshake, onClose);
+  ConnectedLatchClient(HandshakeResult handshake, this.onEvent, void Function() onClose, [void Function()? onShutdown]) : super(handshake, onClose, onShutdown);
 
   Future<HistoryResponse> chatHistory(HistoryRequest req) => call(
         "chat_history",

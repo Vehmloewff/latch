@@ -204,12 +204,9 @@ void main() {
     channel.receive(<int>[1, FrameCode.response]);
 
     await expectLatchError(response, 'protocol_violation');
-    expect(client.closed, isTrue);
+    expect(client.closed, isFalse);
     expect(channel.fakeSink.closeCode, 1002);
-    await expectLatchError(
-      client.chatHistory(HistoryRequest(room: 'general')),
-      'connection_closed',
-    );
+    client.close();
   });
 
   test('events dispatch and local or remote close fail pending requests',
@@ -247,7 +244,8 @@ void main() {
         expectLatchError(remotePending, 'connection_closed');
     await remoteChannel.remoteClose();
     await remotePendingError;
-    expect(remoteClient.closed, isTrue);
+    expect(remoteClient.closed, isFalse);
+    remoteClient.close();
   });
 
   test('remote close reports offline once', () async {
@@ -270,7 +268,7 @@ void main() {
     expect(states, [ConnectionState.connecting, ConnectionState.connected]);
     await (await socketReady.future).close();
     await offline.future;
-    expect(client.closed, isTrue);
+    expect(client.closed, isFalse);
     client.close();
     expect(states, [
       ConnectionState.connecting,
@@ -301,16 +299,106 @@ void main() {
         onConnectionStateChange: states.add);
     final connecting = latch.connect();
     expect(states, [ConnectionState.connecting]);
-    await expectLater(
-      connecting,
-      throwsA(
-        predicate<Object?>((error) =>
-            error is LatchError &&
-            error.code == 'connect_rejected' &&
-            error.message == 'bad token'),
-      ),
-    );
-    expect(states, [ConnectionState.connecting, ConnectionState.offline]);
     await serverTask;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(states, [ConnectionState.connecting, ConnectionState.offline]);
+    latch.close();
+    await expectLatchError(connecting, 'connection_closed');
+  });
+
+  test(
+      'initial transient failure retries and keeps the same client after reconnect',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final states = <ConnectionState>[];
+    final offline = Completer<void>();
+    final latch = LatchClient(
+        ClientOptions(Uri.parse('ws://127.0.0.1:${server.port}/chat')),
+        onEvent: (_) {}, onConnectionStateChange: (state) {
+      states.add(state);
+      if (state == ConnectionState.offline && !offline.isCompleted)
+        offline.complete();
+    });
+    final requests = StreamIterator<HttpRequest>(server);
+    addTearDown(requests.cancel);
+    final connecting = latch.connect();
+    expect(await requests.moveNext(), isTrue);
+    final rejected = await WebSocketTransformer.upgrade(requests.current);
+    await rejected.close();
+    await offline.future.timeout(const Duration(seconds: 4));
+    expect(states, contains(ConnectionState.offline));
+    expect(
+        await requests.moveNext().timeout(const Duration(seconds: 4)), isTrue);
+    final accepted = await WebSocketTransformer.upgrade(requests.current);
+    final client = await connecting;
+    expect(states.last, ConnectionState.connected);
+    await accepted.close();
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(client.closed, isFalse);
+    latch.close();
+    expect(client.closed, isTrue);
+  });
+
+  test('explicit close cancels an initial connection waiting for upgrade',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final request = Completer<HttpRequest>();
+    final subscription = server.listen(request.complete);
+    addTearDown(subscription.cancel);
+    final states = <ConnectionState>[];
+    final latch = LatchClient(
+      ClientOptions(Uri.parse('ws://127.0.0.1:${server.port}/chat')),
+      onEvent: (_) {},
+      onConnectionStateChange: states.add,
+    );
+    final connecting = latch.connect();
+    final pendingRequest =
+        await request.future.timeout(const Duration(seconds: 4));
+    latch.close();
+    await expectLatchError(
+        connecting.timeout(const Duration(seconds: 4)), 'connection_closed');
+    await pendingRequest.response.close();
+    expect(states, [ConnectionState.connecting, ConnectionState.offline]);
+  });
+
+  test('offline queue flushes in order without replaying sent calls', () async {
+    final first = FakeWebSocketChannel();
+    final second = FakeWebSocketChannel();
+    final events = <Event>[];
+    final client = await connectedFakeClient(first, onEvent: events.add);
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+    final sent = client.chatListRooms(ListRoomsRequest());
+    final failed = expectLatchError(sent, 'connection_closed');
+    await first.remoteClose();
+    await failed;
+    expect(client.closed, isFalse);
+    final a = client.chatListRooms(ListRoomsRequest());
+    final b = client.chatListRooms(ListRoomsRequest());
+    client.reconnect(HandshakeResult(second, second.stream.listen(null), []));
+    final ids = second.fakeSink.sent
+        .map((raw) => BinaryEnvelope.decode(raw as List<int>).id)
+        .toList();
+    expect(ids, ['2', '3']);
+    for (final id in ids) {
+      second.receive(responseFrame(id, StructValue({1: <Object?>[]})));
+    }
+    await Future.wait([a, b]);
+    second.receive(BinaryEnvelope(
+      type: FrameCode.event,
+      event: 'chat.presence',
+      payload: BinaryCodec.encode(StructValue({
+        1: 'presence',
+        3: StructValue({1: 'general', 2: 'bob', 3: true}),
+      })),
+    ).encode());
+    expect(events.single.presence!.userId, 'bob');
+    await second.remoteClose();
+    final queued = client.chatListRooms(ListRoomsRequest());
+    final rejected = expectLatchError(queued, 'connection_closed');
+    client.close();
+    await rejected;
   });
 }

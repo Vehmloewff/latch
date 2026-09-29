@@ -45,7 +45,7 @@ func TestGeneratedDartRuntimeCleansUpTransportFailures(t *testing.T) {
 	// Encoding the request payload and writing it to the socket are both
 	// synchronous failure points. Neither may leave an entry in _pending.
 	requireDartSource(t, call, "BinaryCodec.encode(payload)", "request payload encoding")
-	requireDartSource(t, call, "_channel.sink.add(request.encode());", "request WebSocket send")
+	requireDartSource(t, call, "_channel.sink.add(frame);", "request WebSocket send")
 	requireDartSource(t, call, "try {", "request transport failure cleanup")
 	requireDartSource(t, call, "_pending.remove(id);", "request transport failure cleanup")
 	requireDartSource(t, call, "completeError(error", "request transport failure cleanup")

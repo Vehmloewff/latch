@@ -45,7 +45,7 @@ func TestGeneratedTypeScriptRuntimeCleansUpTransportFailures(t *testing.T) {
 	// The request must not remain in the correlation map when either payload
 	// encoding or WebSocket send throws synchronously.
 	requireSource(t, call, "encodePayload(payload)", "request payload encoding")
-	requireSource(t, call, "this.ws.send(", "request WebSocket send")
+	requireSource(t, call, "this.ws.send(frame)", "request WebSocket send")
 	requireSource(t, call, "try {", "request transport failure cleanup")
 	requireSource(t, call, "this.pending.delete(id);", "request transport failure cleanup")
 	requireSource(t, call, "reject(error);", "request transport failure cleanup")
@@ -86,7 +86,7 @@ func TestGeneratedTypeScriptRuntimeTerminatesOnConnectionErrors(t *testing.T) {
 
 	requireSource(t, connectionError, "this.failAllPending(", "connection-error handling")
 	requireSource(t, connectionError, "this.handleClose();", "connection-error handling")
-	requireSource(t, connectionError, "this.ws.close(", "connection-error handling")
+	requireSource(t, connectionError, "ws.close(", "connection-error handling")
 }
 
 func TestGeneratedTypeScriptRuntimeDoesNotResolveBeforeConnectionRejectionCanBeObserved(t *testing.T) {

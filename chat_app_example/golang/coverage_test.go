@@ -91,8 +91,10 @@ func TestGeneratedClientWrappersRunAgainstChatExampleServer(t *testing.T) {
 }
 
 func TestConnectionFailureReportsOffline(t *testing.T) {
-	states := make(chan ConnectionState, 2)
-	_, err := New("://invalid", nil, func(state ConnectionState) { states <- state }).Connect(context.Background())
+	states := make(chan ConnectionState, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := New("://invalid", nil, func(state ConnectionState) { states <- state }).Connect(ctx)
 	if err == nil {
 		t.Fatal("expected invalid URL to fail")
 	}

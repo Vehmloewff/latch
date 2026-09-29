@@ -6,6 +6,7 @@ package chatappclient
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/vehmloewff/latch/client"
@@ -98,63 +99,209 @@ func New(url string, onEvent func(Event), onConnectionStateChange ...func(Connec
 
 // Connect opens a live ConnectedLatchClient.
 func (c *LatchClient) Connect(ctx context.Context) (*ConnectedLatchClient, error) {
-	if c.onConnectionStateChange != nil {
-		c.onConnectionStateChange(ConnectionStateConnecting)
-	}
-	conn, err := client.Connect(ctx, c.url, "1")
+	session := &connectionSession{changed: make(chan struct{}), done: make(chan struct{}), onState: c.onConnectionStateChange}
+	session.setState(ConnectionStateConnecting)
+	conn, err := session.dial(ctx, c.url, "1")
 	if err != nil {
-		if c.onConnectionStateChange != nil {
-			c.onConnectionStateChange(ConnectionStateOffline)
-		}
+		session.setState(ConnectionStateOffline)
 		return nil, err
 	}
 
-	events := client.RegisterEvent[Event](conn)
-	result := &ConnectedLatchClient{conn: conn}
-	if c.onConnectionStateChange != nil {
-		c.onConnectionStateChange(ConnectionStateConnected)
-	}
-	go func() {
-		for event := range events {
-			if c.onEvent != nil {
-				c.onEvent(event)
+	result := &ConnectedLatchClient{session: session}
+	ready := make(chan struct{})
+	go session.run(conn, c.url, "1", ready, func(conn *client.Conn) {
+		events := client.RegisterEvent[Event](conn)
+		go func() {
+			for event := range events {
+				if c.onEvent != nil {
+					c.onEvent(event)
+				}
 			}
-		}
-		if c.onConnectionStateChange != nil {
-			c.onConnectionStateChange(ConnectionStateOffline)
-		}
-	}()
-	conn.Start()
+		}()
+	})
+	<-ready
 	return result, nil
 }
 
 // ConnectedLatchClient is a live, connected LatchClient client.
 type ConnectedLatchClient struct {
-	conn *client.Conn
+	session *connectionSession
 }
 
 func (c *ConnectedLatchClient) ChatHistory(ctx context.Context, req HistoryRequest) (HistoryResponse, error) {
-	return client.Call[HistoryResponse](ctx, c.conn, "chat_history", req)
+	return call[HistoryResponse](ctx, c.session, "chat_history", req)
 }
 
 func (c *ConnectedLatchClient) ChatJoinRoom(ctx context.Context, req JoinRoomRequest) (JoinRoomResponse, error) {
-	return client.Call[JoinRoomResponse](ctx, c.conn, "chat_join_room", req)
+	return call[JoinRoomResponse](ctx, c.session, "chat_join_room", req)
 }
 
 func (c *ConnectedLatchClient) ChatListRooms(ctx context.Context, req ListRoomsRequest) (ListRoomsResponse, error) {
-	return client.Call[ListRoomsResponse](ctx, c.conn, "chat_list_rooms", req)
+	return call[ListRoomsResponse](ctx, c.session, "chat_list_rooms", req)
 }
 
 func (c *ConnectedLatchClient) ChatSendMessage(ctx context.Context, req SendMessageRequest) (SendMessageResponse, error) {
-	return client.Call[SendMessageResponse](ctx, c.conn, "chat_send_message", req)
+	return call[SendMessageResponse](ctx, c.session, "chat_send_message", req)
 }
 
 // Close closes the connection.
 func (c *ConnectedLatchClient) Close() error {
-	return c.conn.Close()
+	return c.session.close()
 }
 
 // Closed returns a channel that is closed once the connection has closed.
 func (c *ConnectedLatchClient) Closed() <-chan struct{} {
-	return c.conn.Closed()
+	return c.session.done
+}
+
+// connectionSession owns the replaceable transport. Closed signals intentional shutdown only.
+type connectionSession struct {
+	mu      sync.Mutex
+	conn    *client.Conn
+	changed chan struct{}
+	done    chan struct{}
+	stopped bool
+	onState func(ConnectionState)
+}
+
+func (s *connectionSession) signal() { close(s.changed); s.changed = make(chan struct{}) }
+func (s *connectionSession) setState(state ConnectionState) {
+	if s.onState != nil {
+		s.onState(state)
+	}
+}
+func (s *connectionSession) dial(ctx context.Context, url, version string) (*client.Conn, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		conn, err := client.Connect(ctx, url, version)
+		if err == nil {
+			return conn, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.setState(ConnectionStateOffline)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-s.done:
+			timer.Stop()
+			return nil, &client.Error{Code: "connection_closed", Message: "the connection is closed"}
+		case <-timer.C:
+		}
+		s.setState(ConnectionStateConnecting)
+	}
+}
+func (s *connectionSession) run(conn *client.Conn, url, version string, ready chan struct{}, register func(*client.Conn)) {
+	for {
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			_ = conn.Close()
+			if ready != nil {
+				close(ready)
+			}
+			return
+		}
+		register(conn)
+		s.conn = conn
+		s.signal()
+		s.mu.Unlock()
+		conn.Start()
+		s.setState(ConnectionStateConnected)
+		if ready != nil {
+			close(ready)
+			ready = nil
+		}
+		select {
+		case <-conn.Closed():
+		case <-s.done:
+			return
+		}
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			return
+		}
+		s.conn = nil
+		s.signal()
+		s.mu.Unlock()
+		s.setState(ConnectionStateOffline)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-timer.C:
+		case <-s.done:
+			timer.Stop()
+			return
+		}
+		s.setState(ConnectionStateConnecting)
+		next, err := s.dialUntilClosed(url, version)
+		if err != nil {
+			return
+		}
+		conn = next
+	}
+}
+func (s *connectionSession) dialUntilClosed(url, version string) (*client.Conn, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return s.dial(ctx, url, version)
+}
+func (s *connectionSession) close() error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.stopped = true
+	close(s.done)
+	s.signal()
+	conn := s.conn
+	s.conn = nil
+	s.mu.Unlock()
+	s.setState(ConnectionStateOffline)
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
+}
+func call[T any](ctx context.Context, s *connectionSession, method string, req any) (T, error) {
+	var zero T
+	for {
+		s.mu.Lock()
+		conn, changed, stopped := s.conn, s.changed, s.stopped
+		s.mu.Unlock()
+		if stopped {
+			return zero, &client.Error{Code: "connection_closed", Message: "the connection is closed"}
+		}
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
+		if conn != nil {
+			select {
+			case <-conn.Closed(): // wait for the session to replace this socket
+			default:
+				// Once selected, this action is never retried, even if the socket dies during send.
+				return client.Call[T](ctx, conn, method, req)
+			}
+		}
+		select {
+		case <-changed:
+		case <-s.done:
+			return zero, &client.Error{Code: "connection_closed", Message: "the connection is closed"}
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		}
+	}
 }

@@ -158,12 +158,9 @@ test("malformed frames fail pending requests and close the socket", async () => 
     assert.equal(error.code, "malformed_frame");
     return true;
   });
-  assert.equal(client.closed, true);
+  assert.equal(client.closed, false);
   assert.deepEqual(socket.closeCalls, [{ code: 1002, reason: "malformed binary frame" }]);
-  await assert.rejects(client.chatHistory({ room: "general" }), (error: unknown) => {
-    assert.ok(error instanceof LatchError);
-    return error.code === "connection_closed";
-  });
+  client.close();
 });
 
 test("event dispatch is asynchronous and close fails pending requests", async () => {
@@ -219,10 +216,15 @@ test("state transitions on connect, remote close, and reconnect", async () => {
   first.remoteClose();
   assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline]);
   next = second;
-  const reconnecting = client.connect();
+  const queued = (await connecting).chatListRooms({});
+  await new Promise(resolve => setTimeout(resolve, 2050));
   second.open();
-  const connected = await reconnecting;
-  connected.close();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(second.sent.length, 1);
+  const req = decodeEnvelope(second.sent[0]);
+  second.receive(responseFrame(req.id!, { rooms: [] }, "ListRoomsResponse"));
+  await queued;
+  (await connecting).close();
   assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline,
     ConnectionState.Connecting, ConnectionState.Connected, ConnectionState.Offline]);
 });
@@ -235,40 +237,84 @@ test("state returns offline on setup rejection", async () => {
   const connecting = client.connect();
   socket.open();
   socket.receive(encodeEnvelope({ type: "connection_error", error: "denied" }));
-  await assert.rejects(connecting, LatchError);
+  await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(states, [ConnectionState.Connecting, ConnectionState.Offline]);
+  client.close();
+  await assert.rejects(connecting, LatchError);
 });
 
 test("connect rejects a connection_error that races WebSocket open", async () => {
   const socket = new FakeWebSocket("ws://fake.test/chat?version=1");
-  const connecting = connectWith(socket);
+  const latch = new LatchClient({ url: "ws://fake.test/chat", onEvent: () => {}, webSocketFactory: () => socket });
+  const connecting = latch.connect();
   socket.open();
-  socket.receive(encodeEnvelope({
-    type: "connection_error",
-    error: "bad token",
-    errorCode: "unauthorized",
-  }));
-
-  await assert.rejects(connecting, (error: unknown) => {
-    assert.ok(error instanceof LatchError);
-    assert.equal(error.code, "unauthorized");
-    assert.equal(error.message, "bad token");
-    return true;
-  });
+  socket.receive(encodeEnvelope({ type: "connection_error", error: "bad token", errorCode: "unauthorized" }));
   assert.deepEqual(socket.closeCalls, [{ code: 1000, reason: "connection rejected" }]);
+  latch.close();
+  await assert.rejects(connecting, LatchError);
+});
+
+test("sent calls fail, queued calls preserve order and events, close rejects queue without retries", async () => {
+  const sockets: FakeWebSocket[] = [];
+  const events: Event[] = [];
+  const latch = new LatchClient({ url: "ws://fake.test/chat", onEvent: event => events.push(event),
+    webSocketFactory: url => { const socket = new FakeWebSocket(url); sockets.push(socket); return socket; } });
+  const connecting = latch.connect();
+  sockets[0].open();
+  const client = await connecting;
+  const sent = client.chatListRooms({});
+  const failure = assert.rejects(sent, (e: unknown) => e instanceof LatchError && e.code === "connection_closed");
+  sockets[0].remoteClose();
+  await failure;
+  const a = client.chatListRooms({});
+  const b = client.chatListRooms({});
+  await new Promise(resolve => setTimeout(resolve, 2050));
+  sockets[1].open();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sockets[1].sent.map(frame => decodeEnvelope(frame).id), ["2", "3"]);
+  for (const frame of sockets[1].sent) {
+    const req = decodeEnvelope(frame);
+    sockets[1].receive(responseFrame(req.id!, { rooms: [] }, "ListRoomsResponse"));
+  }
+  await Promise.all([a, b]);
+  sockets[1].receive(encodeEnvelope({ type: "event", event: "chat.message",
+    payload: encodeTyped({ kind: "presence", presence: { room: "general", userId: "bob", online: true } },
+      { kind: "named", name: "Event" }, __latchWireTypes) }));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].presence?.userId, "bob");
+  sockets[1].remoteClose();
+  const queued = client.chatListRooms({});
+  latch.close();
+  await assert.rejects(queued, (e: unknown) => e instanceof LatchError && e.code === "connection_closed");
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  assert.equal(sockets.length, 2);
+});
+
+test("initial failure retries until connected and explicit close cancels setup", async () => {
+  const sockets: FakeWebSocket[] = [];
+  const latch = new LatchClient({ url: "ws://fake.test/chat", onEvent: () => {},
+    webSocketFactory: url => { const socket = new FakeWebSocket(url); sockets.push(socket); return socket; } });
+  const connecting = latch.connect();
+  sockets[0].remoteClose();
+  await new Promise(resolve => setTimeout(resolve, 2050));
+  assert.equal(sockets.length, 2);
+  sockets[1].open();
+  const client = await connecting;
+  client.close();
+  const pending = new LatchClient({ url: "ws://fake.test/chat", onEvent: () => {}, webSocketFactory: () => new FakeWebSocket("ws://fake.test/chat?version=1") });
+  const attempt = pending.connect();
+  pending.close();
+  await assert.rejects(attempt, LatchError);
 });
 
 test("connect rejects a malformed frame before setup", async () => {
   const socket = new FakeWebSocket("ws://fake.test/chat?version=1");
-  const connecting = connectWith(socket);
+  const latch = new LatchClient({ url: "ws://fake.test/chat", onEvent: () => {}, webSocketFactory: () => socket });
+  const connecting = latch.connect();
   socket.open();
   socket.receive(new Uint8Array([1, 4]));
-
-  await assert.rejects(connecting, (error: unknown) => {
-    assert.ok(error instanceof Error);
-    assert.equal(error.message, "Latch: malformed binary response during setup");
-    return true;
-  });
   assert.deepEqual(socket.closeCalls, [{ code: 1002, reason: "malformed binary event before setup" }]);
+  latch.close();
+  await assert.rejects(connecting, LatchError);
 });
 

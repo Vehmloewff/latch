@@ -221,6 +221,8 @@ TypeScript and Dart, and `MathAdd` in Go. Request types, response types, and
 event payloads are generated from the server definition, so client code never
 needs to manually cast responses or maintain a second copy of the protocol.
 
+Generated clients automatically retry failed connections about every two seconds. The connection-state callback reports `connecting`, `offline`, and `connected` as the connection changes. A client that has connected once remains usable after a disconnect: new RPC calls made while offline wait in an unbounded queue and run when the connection returns. Requests already sent on a failed connection are **not** replayed, since replaying an action could apply it twice; those calls fail and the caller can decide whether to retry. Explicitly closing or disposing the client stops reconnecting and fails queued calls. An initial `connect()` also keeps retrying until it succeeds (or is cancelled where the language API supports cancellation).
+
 ## Supported types
 
 Latch supports named exported structs, strings, booleans, signed and
@@ -240,7 +242,7 @@ Anonymous structs, `interface{}`/`any`, channels, functions, complex numbers,
 ```sh
 go build ./...
 go test ./...
-(cd chat_app_example/swift && swift test)
+go run ./integration_test swift # starts the server and runs every Swift test
 
 # Full integration runner: installs TypeScript/Dart dependencies, runs both
 # standalone binary-runtime suites, regenerates clients, and runs the example
@@ -253,8 +255,7 @@ tests, regenerates the chat app example's clients, runs the selected language
 checks, starts its Go server, and runs the integration programs. Run
 `go run ./integration_test swift` to run SwiftLint and `swift test`, including
 its WebSocket integration test against the Go server. Running `swift test` from
-the package directory without `SERVER_URL` still runs codec tests and skips the
-server-dependent test. Language
-Runner arguments are optional: `go`, `dart`, `typescript`, and `swift`; with no
-arguments, all four run. The complete working example is in
+the package directory without `SERVER_URL` fails the server-dependent test rather
+than silently skipping it. Runner arguments are optional: `go`, `dart`,
+`typescript`, `kotlin`, and `swift`; with no arguments, all five run. The complete working example is in
 [`chat_app_example`](chat_app_example).

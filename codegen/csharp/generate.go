@@ -119,7 +119,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	}
 	var b strings.Builder
 	b.WriteString(codegen.HeaderComment(p.Version))
-	b.WriteString("#nullable enable\nusing System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n")
+	b.WriteString("#nullable enable\nusing System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading;\nusing System.Threading.Tasks;\n\n")
 	b.WriteString(runtimeSource)
 	b.WriteString(valueSource)
 	sorted := append([]*protocol.NamedType(nil), p.Types...)
@@ -127,7 +127,7 @@ func Generate(p *protocol.Protocol, opts Options) (map[string][]byte, error) {
 	for _, t := range sorted {
 		renderType(&b, t, ns)
 	}
-	fmt.Fprintf(&b, "\npublic sealed class %s\n{\n    private readonly string _url;\n    private readonly Action<%s> _onEvent;\n    private readonly Action<ConnectionState>? _onConnectionStateChange;\n    private readonly Action<Exception>? _onEventError;\n    public %s(string url, Action<%s> onEvent, Action<ConnectionState>? onConnectionStateChange = null, Action<Exception>? onEventError = null)\n    {\n        _url = url;\n        _onEvent = onEvent ?? throw new ArgumentNullException(nameof(onEvent));\n        _onConnectionStateChange = onConnectionStateChange;\n        _onEventError = onEventError;\n    }\n    public async Task<Connected%s> ConnectAsync() => new Connected%s(await LatchTransport.ConnectAsync(_url, %s, payload => _onEvent(%s), _onEventError, _onConnectionStateChange));\n}\n", client, csType(event, ns), client, csType(event, ns), client, client, quote(p.Version), decode("LatchBinary.Decode(payload)", event, ns))
+	fmt.Fprintf(&b, "\npublic sealed class %s\n{\n    private readonly string _url;\n    private readonly Action<%s> _onEvent;\n    private readonly Action<ConnectionState>? _onConnectionStateChange;\n    private readonly Action<Exception>? _onEventError;\n    public %s(string url, Action<%s> onEvent, Action<ConnectionState>? onConnectionStateChange = null, Action<Exception>? onEventError = null)\n    {\n        _url = url;\n        _onEvent = onEvent ?? throw new ArgumentNullException(nameof(onEvent));\n        _onConnectionStateChange = onConnectionStateChange;\n        _onEventError = onEventError;\n    }\n    public async Task<Connected%s> ConnectAsync(CancellationToken cancellationToken = default) => new Connected%s(await LatchTransport.ConnectAsync(_url, %s, payload => _onEvent(%s), _onEventError, _onConnectionStateChange, cancellationToken));\n}\n", client, csType(event, ns), client, csType(event, ns), client, client, quote(p.Version), decode("LatchBinary.Decode(payload)", event, ns))
 	fmt.Fprintf(&b, "\npublic sealed class Connected%s : IAsyncDisposable\n{\n    private readonly LatchTransport _transport;\n    internal Connected%s(LatchTransport transport) => _transport = transport;\n", client, client)
 	for _, m := range p.Methods {
 		fmt.Fprintf(&b, "\n    public async Task<%s> %sAsync(%s request)\n    {\n        var response = await _transport.CallAsync(%s, LatchBinary.Encode(%s));\n        return %s;\n    }\n", csType(m.ResponseType, ns), id(names.PascalCase(m.Name)), csType(m.RequestType, ns), quote(m.Name), encode("request", m.RequestType, ns), decode("LatchBinary.Decode(response)", m.ResponseType, ns))

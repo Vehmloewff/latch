@@ -72,34 +72,68 @@ export abstract class BaseConnection {
   private nextId = 1;
   private pending = new Map<string, PendingRequest>();
   private _closed = false;
+  private online = true;
+  private queued: Array<() => void> = [];
+  private queuedRejects = new Map<() => void, (err: unknown) => void>();
 
   private readonly onClose: () => void;
+  private readonly onShutdown: () => void;
 
-  constructor(handshake: HandshakeResult, onClose: () => void = () => {}) {
+  constructor(handshake: HandshakeResult, onClose: () => void = () => {}, onShutdown: () => void = () => {}) {
     this.onClose = onClose;
+    this.onShutdown = onShutdown;
     this.ws = handshake.ws;
     // Install the real handler before replaying anything, so a message
     // that arrives while we're replaying is still queued in order rather
     // than raced against this constructor.
-    this.ws.onmessage = (ev) => this.handleMessage(asBytes(ev.data));
-    this.ws.onclose = () => this.handleClose();
-    this.ws.onerror = () => {
-      /* surfaced to callers via rejected/failed pending requests */
-    };
+    this.installHandlers();
     // Events from OnConnect can arrive before this constructor runs. Replay them
     // in order on the next turn, after the generated subclass has initialized
     // its event callback.
     if (handshake.bufferedMessages.length > 0) {
       const buffered = handshake.bufferedMessages;
+      const socket = handshake.ws;
       setTimeout(() => {
         for (const data of buffered) {
-          this.handleMessage(data);
+          if (this.ws === socket && this.online && !this._closed) this.handleMessage(data);
         }
       }, 0);
     }
   }
 
-  /** True once the connection has closed, for any reason. */
+  private installHandlers(): void {
+    this.ws.onmessage = (ev) => this.handleMessage(asBytes(ev.data));
+    this.ws.onclose = () => this.handleClose();
+    this.ws.onerror = () => { const ws = this.ws; this.handleClose(); ws.close(); };
+  }
+
+  /** Installs a new transport without replacing the typed client. */
+  reconnect(handshake: HandshakeResult): boolean {
+    if (this._closed) {
+      handshake.ws.close();
+      return false;
+    }
+    this.ws = handshake.ws;
+    this.online = true;
+    this.installHandlers();
+    for (const data of handshake.bufferedMessages) this.handleMessage(data);
+    if (!this.online) return false;
+    const queued = this.queued.splice(0);
+    for (const send of queued) {
+      if (this._closed) {
+        this.queuedRejects.get(send)?.(connectionClosedError());
+        this.queuedRejects.delete(send);
+      } else if (!this.online) {
+        this.queued.push(send);
+      } else {
+        this.queuedRejects.delete(send);
+        send();
+      }
+    }
+    return this.online;
+  }
+
+  /** True once explicitly closed; transient disconnects remain reusable. */
   get closed(): boolean {
     return this._closed;
   }
@@ -107,8 +141,14 @@ export abstract class BaseConnection {
   /** Closes the connection. Safe to call more than once. */
   close(): void {
     if (this._closed) return;
+    this._closed = true;
+    this.online = false;
+    this.onShutdown();
+    this.failAllPending(connectionClosedError());
+    this.failQueued(connectionClosedError());
+    this.detach();
     this.ws.close(1000, "");
-    this.handleClose();
+    this.onClose();
   }
 
   /** @internal used by generated method namespaces. */
@@ -123,12 +163,28 @@ export abstract class BaseConnection {
     }
     const id = String(this.nextId++);
     return new Promise<TResp>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, decode: decodePayload });
+      // Encode before queueing so invalid payloads fail immediately.
+      let frame: Uint8Array;
       try {
-        this.ws.send(encodeEnvelope({ type: "request", id, method, payload: encodePayload(payload) }));
+        frame = encodeEnvelope({ type: "request", id, method, payload: encodePayload(payload) });
       } catch (error) {
-        this.pending.delete(id);
         reject(error);
+        return;
+      }
+      const send = () => {
+        this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, decode: decodePayload });
+        try {
+          this.ws.send(frame);
+        } catch (error) {
+          this.pending.delete(id);
+          reject(error);
+          this.handleClose();
+        }
+      };
+      if (this.online) send();
+      else {
+        this.queued.push(send);
+        this.queuedRejects.set(send, reject);
       }
     });
   }
@@ -144,9 +200,10 @@ export abstract class BaseConnection {
       env = decodeEnvelope(data);
     } catch {
       this.failAllPending(new LatchError("malformed_frame", "malformed binary frame"));
+      const ws = this.ws;
       this.handleClose();
       try {
-        this.ws.close(1002, "malformed binary frame");
+        ws.close(1002, "malformed binary frame");
       } catch {
         // The socket may already be closed; pending calls are already failed.
       }
@@ -185,9 +242,10 @@ export abstract class BaseConnection {
       case "connection_error": {
         const error = new LatchError(env.errorCode ?? "internal_error", env.error ?? "connection error");
         this.failAllPending(error);
+        const ws = this.ws;
         this.handleClose();
         try {
-          this.ws.close(1000, "connection error");
+          ws.close(1000, "connection error");
         } catch {
           // The socket may already be closed.
         }
@@ -199,10 +257,24 @@ export abstract class BaseConnection {
   }
 
   private handleClose(): void {
-    if (this._closed) return;
-    this._closed = true;
+    if (this._closed || !this.online) return;
+    this.online = false;
+    this.detach();
     this.failAllPending(connectionClosedError());
     this.onClose();
+  }
+
+  private detach(): void {
+    this.ws.onopen = null;
+    this.ws.onclose = null;
+    this.ws.onerror = null;
+    this.ws.onmessage = null;
+  }
+
+  private failQueued(err: Error): void {
+    for (const send of this.queued) this.queuedRejects.get(send)?.(err);
+    this.queued = [];
+    this.queuedRejects.clear();
   }
 
   private failAllPending(err: Error): void {
@@ -235,7 +307,8 @@ export interface HandshakeResult {
 export function connectSocket(
   url: string,
   factory: WebSocketFactory | undefined,
-  version: string
+  version: string,
+  signal?: AbortSignal
 ): Promise<HandshakeResult> {
   const target = new URL(url);
   target.searchParams.set("version", version);
@@ -246,6 +319,16 @@ export function connectSocket(
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
     let opened = false;
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+      ws.close();
+      reject(connectionClosedError());
+    };
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener("abort", abort, { once: true });
+    const cleanup = () => signal?.removeEventListener("abort", abort);
 
     ws.onopen = () => {
       opened = true;
@@ -256,6 +339,7 @@ export function connectSocket(
       setTimeout(() => {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve({ ws, bufferedMessages });
       }, 0);
     };
@@ -263,12 +347,15 @@ export function connectSocket(
     ws.onerror = () => {
       if (settled) return;
       settled = true;
+      cleanup();
+      ws.close();
       reject(new Error("Latch: WebSocket connection failed"));
     };
 
     ws.onclose = () => {
       if (settled) return;
       settled = true;
+      cleanup();
       reject(new Error("Latch: connection closed before setup completed"));
     };
 
@@ -280,6 +367,7 @@ export function connectSocket(
       } catch {
         if (!settled) {
           settled = true;
+          cleanup();
           ws.close(1002, "malformed binary event before setup");
           reject(new Error("Latch: malformed binary response during setup"));
         } else {
@@ -295,6 +383,7 @@ export function connectSocket(
       if (env.type === "connection_error") {
         if (!settled) {
           settled = true;
+          cleanup();
           ws.close(1000, "connection rejected");
           reject(new LatchError(env.errorCode ?? "connect_rejected", env.error ?? "connection rejected"));
           return;
@@ -981,8 +1070,16 @@ export const __latchWireTypes: WireTypeRegistry = {
 
 
 export class LatchClient {
+  private readonly version = "1";
   private options: ClientOptions & { onEvent: (event: Event) => void };
   private state: ConnectionState = ConnectionState.Offline;
+  private stopped = false;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private wakeRetry: (() => void) | undefined;
+  private connecting = false;
+  private retrying = false;
+  private attempt?: AbortController;
+  private client?: BaseConnection;
 
   constructor(options: ClientOptions & { onEvent: (event: Event) => void }) {
     this.options = options;
@@ -995,18 +1092,81 @@ export class LatchClient {
   }
 
   async connect(): Promise<ConnectedLatchClient> {
-    if (this.state !== ConnectionState.Offline) {
-      throw new Error("Latch: client is already connecting or connected");
+    if (this.connecting || this.client || this.stopped) {
+      throw new Error("Latch: client is already connecting or connected (or closed)");
     }
+    this.connecting = true;
     this.setState(ConnectionState.Connecting);
+    while (!this.stopped) {
     try {
-      const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, "1");
-      const client = new ConnectedLatchClient(handshake, this.options.onEvent, () => this.setState(ConnectionState.Offline));
+      this.attempt = new AbortController();
+      const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, "1", this.attempt.signal);
+      const client = new ConnectedLatchClient(handshake, this.options.onEvent, () => this.disconnected(), () => this.stop());
+      if (this.stopped) { client.close(); break; }
+      this.client = client;
+      this.connecting = false;
       this.setState(ConnectionState.Connected);
       return client;
-    } catch (error) {
+    } catch (_) {
+      if (this.stopped) break;
       this.setState(ConnectionState.Offline);
-      throw error;
+      await this.delay();
+      if (!this.stopped) this.setState(ConnectionState.Connecting);
+    }
+    }
+    throw new LatchError("connection_closed", "the connection is closed");
+  }
+
+  /** Cancel initial connection attempts or permanently close the active client. */
+  close(): void {
+    this.stop();
+    this.client?.close();
+  }
+
+  private stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.attempt?.abort();
+    this.wakeRetry?.();
+    this.setState(ConnectionState.Offline);
+  }
+
+  private delay(): Promise<void> {
+    return new Promise(resolve => {
+      this.wakeRetry = () => { if (this.retryTimer) clearTimeout(this.retryTimer); this.wakeRetry = undefined; resolve(); };
+      this.retryTimer = setTimeout(() => this.wakeRetry?.(), 2000);
+    });
+  }
+
+  private disconnected(): void {
+    this.setState(ConnectionState.Offline);
+    if (this.stopped || !this.client || this.retrying) return;
+    this.retrying = true;
+    void this.retry();
+  }
+
+  private async retry(): Promise<void> {
+    await this.delay();
+    while (!this.stopped) {
+      this.setState(ConnectionState.Connecting);
+      try {
+        this.attempt = new AbortController();
+        const handshake = await connectSocket(this.options.url, this.options.webSocketFactory, this.version, this.attempt.signal);
+        if (this.stopped) { handshake.ws.close(); return; }
+        if (!this.client?.reconnect(handshake)) {
+          if (this.stopped || this.client?.closed) return;
+          this.setState(ConnectionState.Offline);
+          await this.delay();
+          continue;
+        }
+        this.retrying = false;
+        this.setState(ConnectionState.Connected);
+        return;
+      } catch (_) {
+        if (this.stopped) return;
+        this.setState(ConnectionState.Offline);
+        await this.delay();
+      }
     }
   }
 }
@@ -1027,8 +1187,8 @@ export class ConnectedLatchClient extends BaseConnection {
 
   private readonly onEvent: (event: Event) => void;
 
-  constructor(handshake: HandshakeResult, onEvent: (event: Event) => void, onClose: () => void) {
-    super(handshake, onClose);
+  constructor(handshake: HandshakeResult, onEvent: (event: Event) => void, onClose: () => void, onShutdown: () => void = () => {}) {
+    super(handshake, onClose, onShutdown);
     this.onEvent = onEvent;
   }
 
