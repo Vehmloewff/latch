@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/vehmloewff/latch/codegen/csharp"
 	"github.com/vehmloewff/latch/codegen/dart"
 	"github.com/vehmloewff/latch/codegen/golang"
 	"github.com/vehmloewff/latch/codegen/kotlin"
@@ -73,6 +74,14 @@ type KotlinOptions struct {
 	ClientName string
 }
 
+// CSharpOptions configures standalone C# client generation.
+type CSharpOptions struct {
+	// OutputDir is the directory for the generated LatchClient.cs source file.
+	OutputDir string
+	// ClientName overrides the generated class name (default LatchClient).
+	ClientName string
+}
+
 // GenerateOptions selects which language clients Server.Generate produces.
 // Leave a field nil to skip that language.
 type GenerateOptions struct {
@@ -81,6 +90,7 @@ type GenerateOptions struct {
 	Go         *GoOptions
 	Swift      *SwiftOptions
 	Kotlin     *KotlinOptions
+	CSharp     *CSharpOptions
 }
 
 // Schema finalizes the server (if necessary) and returns the normalized
@@ -193,6 +203,22 @@ func (s *Server[S]) GenerateKotlin(opts KotlinOptions) error {
 	return nil
 }
 
+// GenerateCSharp finalizes the server and writes a standalone C# client.
+func (s *Server[S]) GenerateCSharp(opts CSharpOptions) error {
+	schema, err := s.Schema()
+	if err != nil {
+		return err
+	}
+	files, err := csharp.Generate(schema, csharp.Options{ClientName: opts.ClientName})
+	if err != nil {
+		return fmt.Errorf("latch: generate csharp: %w", err)
+	}
+	if err := writeGeneratedFiles(opts.OutputDir, files); err != nil {
+		return fmt.Errorf("latch: write csharp output: %w", err)
+	}
+	return nil
+}
+
 // Generate finalizes the server (if not already finalized) and writes
 // generated client code for every requested language. It is retained as a
 // convenience wrapper; callers that want one target can use
@@ -220,6 +246,11 @@ func (s *Server[S]) Generate(opts GenerateOptions) error {
 	}
 	if opts.Kotlin != nil {
 		if err := s.GenerateKotlin(*opts.Kotlin); err != nil {
+			return err
+		}
+	}
+	if opts.CSharp != nil {
+		if err := s.GenerateCSharp(*opts.CSharp); err != nil {
 			return err
 		}
 	}

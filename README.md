@@ -137,10 +137,18 @@ func main() {
     }); err != nil {
         log.Fatal(err)
     }
+
+    if err := server.GenerateCSharp(latch.CSharpOptions{
+        OutputDir: "./csharp",
+    }); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
 The Kotlin/JVM target generates a standalone `LatchClient.kt` using the JDK WebSocket client (Java 11+) and Kotlin standard library. Connect with `LatchClient(url).connect()`, call typed methods on the returned connection, set `onEvent` to receive events, and call `close()` when done. Run `go test ./codegen/kotlin -v` with `kotlinc` and Java installed for binary and socket tests; `go run ./integration_test kotlin` also generates the example client.
+
+The C# target generates a standalone `LatchClient.cs` for .NET 8+ with no NuGet dependencies. Connect with `await new LatchClient(url).ConnectAsync()`, call typed `*Async` methods on the returned connection, set `OnEvent` and `OnEventError` callbacks, and dispose it with `await using`. Run `go test ./codegen/csharp -v` with the .NET SDK installed to compile and exercise binary and WebSocket tests.
 
 Use `GenerateSchema` when integrating the in-process normalized protocol IR with custom generators.
 

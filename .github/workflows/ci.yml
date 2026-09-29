@@ -110,6 +110,21 @@ jobs:
       - name: Run Kotlin integration tests
         run: go run ./integration_test kotlin
 
+  csharp:
+    name: C# client tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run generated C# binary and WebSocket tests
+        run: go test ./codegen/csharp -count=1 -v
+
   node:
     name: Node tests
     runs-on: ubuntu-latest

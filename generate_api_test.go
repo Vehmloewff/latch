@@ -94,6 +94,14 @@ func TestTargetSpecificGenerationWritesExpectedFiles(t *testing.T) {
 			want: []string{"class WebClient(", "mathAdd"},
 		},
 		{
+			name: "csharp",
+			call: func(s *Server[generationTestState], dir string) error {
+				return s.GenerateCSharp(CSharpOptions{OutputDir: dir, ClientName: "WebClient"})
+			},
+			file: "LatchClient.cs",
+			want: []string{"class WebClient", "MathAddAsync", "api-v1"},
+		},
+		{
 			name: "go",
 			call: func(s *Server[generationTestState], dir string) error {
 				return s.GenerateGo(GoOptions{OutputDir: dir, Package: "apiclient", ClientName: "WebClient"})
@@ -129,6 +137,7 @@ func TestGenerateWritesAllRequestedTargetsAndSkipsNilTargets(t *testing.T) {
 	dartDir := filepath.Join(root, "dart")
 	goDir := filepath.Join(root, "go")
 	kotlinDir := filepath.Join(root, "kotlin")
+	csharpDir := filepath.Join(root, "csharp")
 
 	server := newGenerationTestServer(t)
 	if err := server.Generate(GenerateOptions{
@@ -136,6 +145,7 @@ func TestGenerateWritesAllRequestedTargetsAndSkipsNilTargets(t *testing.T) {
 		Dart:       &DartOptions{OutputDir: dartDir},
 		Go:         &GoOptions{OutputDir: goDir},
 		Kotlin:     &KotlinOptions{OutputDir: kotlinDir},
+		CSharp:     &CSharpOptions{OutputDir: csharpDir},
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -144,6 +154,7 @@ func TestGenerateWritesAllRequestedTargetsAndSkipsNilTargets(t *testing.T) {
 		filepath.Join(dartDir, "lib", "client.dart"),
 		filepath.Join(goDir, "client.go"),
 		filepath.Join(kotlinDir, "LatchClient.kt"),
+		filepath.Join(csharpDir, "LatchClient.cs"),
 	} {
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
 			t.Fatalf("generated output %q is not a file: %v", path, err)
@@ -169,6 +180,7 @@ func TestGenerationAPIReportsSchemaAndOutputErrors(t *testing.T) {
 			{"dart", func() error { return server.GenerateDart(DartOptions{OutputDir: t.TempDir()}) }},
 			{"go", func() error { return server.GenerateGo(GoOptions{OutputDir: t.TempDir()}) }},
 			{"kotlin", func() error { return server.GenerateKotlin(KotlinOptions{OutputDir: t.TempDir()}) }},
+			{"csharp", func() error { return server.GenerateCSharp(CSharpOptions{OutputDir: t.TempDir()}) }},
 			{"all", func() error { return server.Generate(GenerateOptions{Go: &GoOptions{OutputDir: t.TempDir()}}) }},
 		} {
 			t.Run(call.name, func(t *testing.T) {
@@ -196,6 +208,9 @@ func TestGenerationAPIReportsSchemaAndOutputErrors(t *testing.T) {
 		{"kotlin output", func(s *Server[generationTestState], dir string) error {
 			return s.GenerateKotlin(KotlinOptions{OutputDir: dir})
 		}, "write kotlin output"},
+		{"csharp output", func(s *Server[generationTestState], dir string) error {
+			return s.GenerateCSharp(CSharpOptions{OutputDir: dir})
+		}, "write csharp output"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			badOutput := filepath.Join(t.TempDir(), "not-a-directory")
