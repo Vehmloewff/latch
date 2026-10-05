@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
     name: Go tests
@@ -23,7 +27,13 @@ jobs:
           cache: true
 
       - name: Run Go unit tests
-        run: go test ./...
+        shell: bash
+        # Foreign executable suites belong to their language jobs; the Go
+        # example package is tested against the live server in the next step.
+        run: |
+          go list ./... |
+            grep -Ev '/codegen/(kotlin|csharp|rust)(/|$)|/chat_app_example/golang(/|$)' |
+            xargs go test -count=1
 
       - name: Run Go cross-language integration tests
         run: go run ./integration_test go
@@ -123,12 +133,12 @@ jobs:
       - name: Fetch Rust client dependencies
         run: cargo fetch --locked --manifest-path chat_app_example/rust/Cargo.toml
 
-      - name: Test generated Rust clients and wire codec
+      - name: Test generated Rust clients
         env:
           LATCH_RUST_REQUIRE: '1'
         run: go test ./codegen/rust -count=1 -v
 
-      - name: Run Rust lifecycle and live Go server integration tests
+      - name: Run Rust wire codec, lifecycle, and live Go server integration tests
         run: go run ./integration_test rust
 
   node:

@@ -139,6 +139,17 @@ func runCargo(t *testing.T, p *protocol.Protocol, target string, rustTests strin
 		t.Fatal(err)
 	}
 	files["tests/generated.rs"] = []byte(rustTests)
+	// CI fetches this locked graph before running the generated crates offline.
+	// Re-resolving without it can select uncached or newly yanked dependencies.
+	lock, err := os.ReadFile("../../chat_app_example/rust/Cargo.lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const examplePackage = "name = \"chat_app_client\""
+	if bytes.Count(lock, []byte(examplePackage)) != 1 {
+		t.Fatal("Rust example lockfile must contain exactly one chat_app_client package")
+	}
+	files["Cargo.lock"] = bytes.Replace(lock, []byte(examplePackage), []byte("name = \"latch_client\""), 1)
 	dir := t.TempDir()
 	for name, data := range files {
 		path := filepath.Join(dir, name)
@@ -149,7 +160,9 @@ func runCargo(t *testing.T, p *protocol.Protocol, target string, rustTests strin
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command("cargo", "test", "--offline", "--quiet")
+	// The example integration runner owns the shared runtime tests. These
+	// crates only need their schema-specific generation and codec checks.
+	cmd := exec.Command("cargo", "test", "--locked", "--offline", "--quiet", "--test", "generated")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+target)
 	if out, err := cmd.CombinedOutput(); err != nil {

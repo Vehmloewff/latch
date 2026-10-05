@@ -250,18 +250,24 @@ import java.util.concurrent.ExecutionException
 
 fun main(args: Array<String>) {
   val arrived = CountDownLatch(1)
+  val offlineState = CountDownLatch(1)
   val states = java.util.concurrent.CopyOnWriteArrayList<ConnectionState>()
-  val client = LatchClient(args.single(), { e -> check(e.text == "early"); arrived.countDown() }, { states.add(it) }).connect().get(8, TimeUnit.SECONDS)
-  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED))
-  check(arrived.await(4, TimeUnit.SECONDS))
+  val client = LatchClient(args.single(), { e -> check(e.text == "early") { "Unexpected early event: $e" }; arrived.countDown() }, {
+    states.add(it)
+    if (it == ConnectionState.OFFLINE) offlineState.countDown()
+  }).connect().get(8, TimeUnit.SECONDS)
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED)) { "Unexpected connected states: $states" }
+  check(arrived.await(4, TimeUnit.SECONDS)) { "Early event did not arrive; states=$states" }
   val packet = Packet("hello", State.Open, null, blob = byteArrayOf(1, 2), history = emptyList(), tags = emptyMap())
   val response = client.chatSendMessage(packet).get(5, TimeUnit.SECONDS)
-  check(response.text == "hello" && response.blob.contentEquals(byteArrayOf(1, 2)))
+  check(response.text == "hello" && response.blob.contentEquals(byteArrayOf(1, 2))) { "Unexpected RPC response: text=${response.text}, blob=${response.blob.contentToString()}" }
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("RPC error succeeded") }
-  catch (e: ExecutionException) { check((e.cause as LatchError).code == "denied") }
+  catch (e: ExecutionException) { check((e.cause as LatchError).code == "denied") { "Unexpected RPC error: ${e.cause}" } }
   try { client.chatSendMessage(packet).get(5, TimeUnit.SECONDS); error("pending RPC survived server close") }
-  catch (_: ExecutionException) { }
-  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED, ConnectionState.OFFLINE))
+  catch (e: ExecutionException) { check((e.cause as LatchError).code == "connection_closed") { "Unexpected disconnect error: ${e.cause}" } }
+  // Pending RPCs fail before the OFFLINE callback runs; await that callback separately.
+  check(offlineState.await(4, TimeUnit.SECONDS)) { "OFFLINE callback did not arrive after pending RPC failure; states=$states" }
+  check(states.toList() == listOf(ConnectionState.CONNECTING, ConnectionState.CONNECTED, ConnectionState.OFFLINE)) { "Unexpected disconnected states: $states" }
   val offline = client.chatSendMessage(packet)
   client.close()
   try { offline.get(5, TimeUnit.SECONDS); error("queued request survived close") }
@@ -271,7 +277,7 @@ fun main(args: Array<String>) {
   val failedStates = mutableListOf<ConnectionState>()
   try { LatchClient("not a websocket URL", { _ -> }, { failedStates.add(it) }).connect().get(5, TimeUnit.SECONDS); error("invalid URL connected") }
   catch (_: ExecutionException) { }
-  check(failedStates == listOf(ConnectionState.CONNECTING, ConnectionState.OFFLINE))
+  check(failedStates == listOf(ConnectionState.CONNECTING, ConnectionState.OFFLINE)) { "Unexpected invalid-URL states: $failedStates" }
   println("Kotlin real WebSocket lifecycle passed")
 }
 `
