@@ -220,7 +220,7 @@ func (s *Server[S]) dispatchMethod(ctx context.Context, conn *Conn, env wire.Env
 	}
 
 	reqPtr := m.adapter.NewRequest()
-	if err := wire.Decode(env.Payload, reqPtr); err != nil {
+	if err := wire.DecodeWithLimit(env.Payload, reqPtr, s.opts.MaxDecodeBytes); err != nil {
 		s.sendResponseError(conn, env.ID, ErrCodeInvalidRequest, "malformed request payload")
 		return
 	}

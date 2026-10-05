@@ -17,6 +17,7 @@ import (
 	"github.com/vehmloewff/latch/names"
 	"github.com/vehmloewff/latch/protocol"
 	"github.com/vehmloewff/latch/reflectapi"
+	"github.com/vehmloewff/latch/wire"
 )
 
 // Default configuration values, used whenever the corresponding Options
@@ -25,6 +26,7 @@ const (
 	DefaultMaxConcurrentRequests = 32
 	DefaultOutboundQueueSize     = 256
 	DefaultMaxMessageBytes       = 1 << 20 // 1 MiB
+	DefaultMaxDecodeBytes        = wire.DefaultMaxDecodeBytes
 )
 
 // Options configures a Server.
@@ -48,6 +50,13 @@ type Options struct {
 	// message. Defaults to DefaultMaxMessageBytes. Oversized messages close
 	// the connection.
 	MaxMessageBytes int64
+
+	// MaxDecodeBytes bounds aggregate conservative allocation accounting when
+	// decoding each request payload, independently of MaxMessageBytes. This
+	// is not an exact heap or process-memory cap. Non-positive values default
+	// to DefaultMaxDecodeBytes (64 MiB). Payloads exceeding the budget receive
+	// ErrCodeInvalidRequest without invoking the handler.
+	MaxDecodeBytes int64
 
 	// Debug, when true, includes the underlying Go error string in
 	// ErrCodeInternal wire errors. Never enable this in production: it can
@@ -80,6 +89,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.MaxMessageBytes <= 0 {
 		out.MaxMessageBytes = DefaultMaxMessageBytes
+	}
+	if out.MaxDecodeBytes <= 0 {
+		out.MaxDecodeBytes = DefaultMaxDecodeBytes
 	}
 	return out
 }
