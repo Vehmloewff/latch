@@ -209,6 +209,20 @@ func (c *Conn) terminate() {
 	})
 }
 
+func (c *Conn) registerPending(id string, ch chan pendingResult) error {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	// Shutdown closes this channel before draining pending under the same lock.
+	// A call must either join that drain or be rejected, never register after it.
+	select {
+	case <-c.closed:
+		return &Error{Code: "connection_closed", Message: "the connection is closed"}
+	default:
+	}
+	c.pending[id] = ch
+	return nil
+}
+
 // call sends a request frame for method and blocks until its response,
 // error, ctx cancellation, or connection close.
 func (c *Conn) call(ctx context.Context, method string, req any) ([]byte, error) {
@@ -226,9 +240,9 @@ func (c *Conn) call(ctx context.Context, method string, req any) ([]byte, error)
 	id := fmt.Sprintf("%d", c.nextID.Add(1))
 	ch := make(chan pendingResult, 1)
 
-	c.pendingMu.Lock()
-	c.pending[id] = ch
-	c.pendingMu.Unlock()
+	if err := c.registerPending(id, ch); err != nil {
+		return nil, err
+	}
 
 	envRaw, err := (wire.Envelope{Type: wire.FrameRequest, ID: id, Method: method, Payload: raw}).MarshalBinary()
 	if err != nil {
@@ -248,6 +262,8 @@ func (c *Conn) call(ctx context.Context, method string, req any) ([]byte, error)
 		return nil, fmt.Errorf("latch: write request: %w", writeErr)
 	}
 
+	// Shutdown resolves registered calls through ch as well. Selecting closed
+	// separately could discard an already-delivered response or structured error.
 	select {
 	case res := <-ch:
 		if res.err != nil {
@@ -259,8 +275,6 @@ func (c *Conn) call(ctx context.Context, method string, req any) ([]byte, error)
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
 		return nil, ctx.Err()
-	case <-c.closed:
-		return nil, &Error{Code: "connection_closed", Message: "the connection is closed"}
 	}
 }
 

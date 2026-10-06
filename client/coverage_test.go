@@ -188,6 +188,38 @@ func TestClientConnectionErrorFailsPendingCallAndCloses(t *testing.T) {
 	}
 }
 
+func TestClientResponseSurvivesImmediateServerClose(t *testing.T) {
+	conn := connectCoverageClient(t, func(ws *websocket.Conn) {
+		request, err := readCoverageRequest(ws)
+		if err != nil {
+			return
+		}
+		payload, err := wire.Encode(coverageResponse{Value: 42})
+		if err != nil {
+			return
+		}
+		_ = writeCoverageEnvelope(ws, wire.Envelope{
+			Type: wire.FrameResponse, ID: request.ID, Payload: payload,
+		})
+	})
+	conn.Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	response, err := client.Call[coverageResponse](ctx, conn, "response_then_close", coverageRequest{})
+	if err != nil {
+		t.Fatalf("Call lost response to server close: %v", err)
+	}
+	if response.Value != 42 {
+		t.Fatalf("response value = %d, want 42", response.Value)
+	}
+	select {
+	case <-conn.Closed():
+	case <-ctx.Done():
+		t.Fatal("server close did not reach client")
+	}
+}
+
 func TestClientRequestEncodingFailure(t *testing.T) {
 	conn := connectCoverageClient(t, func(ws *websocket.Conn) {
 		_, _, _ = ws.Read(context.Background())
